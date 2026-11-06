@@ -1,0 +1,289 @@
+"""Action-specific validation and independently timestamped observations."""
+import io
+import time
+import uuid
+from datetime import datetime, timezone
+from PIL import Image, ImageChops, ImageStat
+
+from . import targets
+from .images import image_evidence
+from .vision import LocalVision, bind_reference, relocate, stationary, normalized, inside
+from .readiness import confirm_target
+
+
+class TargetValidation:
+    def _cached_visual_labels(self, obs, spec):
+        key = (spec.text, spec.context_text, tuple(spec.search_bounds or ()))
+        if key not in obs.visual_queries:
+            if self._vision is None:
+                self._vision = LocalVision()
+            obs.visual_queries[key] = self._vision.read(obs.png, texts=(spec.text, spec.context_text), region=spec.search_bounds)
+        return obs.visual_queries[key]
+
+    def _query_visual_candidates(self, obs, spec):
+        """Interpret only cached pixels. Candidate IDs never outlive their observation."""
+        from dataclasses import asdict
+        labels = self._cached_visual_labels(obs, spec)
+        scope = spec.search_bounds or (0, 0, obs.header['width'], obs.header['height'])
+        matches = [v for v in labels if normalized(v.text) == normalized(spec.text) and inside(v.bounds, scope)]
+        records = []
+        for label in matches[:16]:
+            record = {'text': label.text, 'bounds': list(label.bounds), 'confidence': round(label.score, 3)}
+            try:
+                binding = bind_reference(labels, spec, label.bounds, (obs.header['width'], obs.header['height']), obs.tree.graph)
+                value = (spec, label.bounds)
+                candidate_id = next((key for key, item in obs.visual_candidates.items() if item == value), None)
+                if candidate_id is None:
+                    candidate_id = 'v' + uuid.uuid4().hex[:12]
+                    obs.visual_candidates[candidate_id] = value
+                record.update(id=candidate_id, context_text=spec.context_text,
+                              context_bounds=[list(c.bounds) for c in binding.contexts])
+            except targets.TargetError as exc:
+                record['rejection'] = exc.code
+            records.append(record)
+        obs.visual_result = {'query': asdict(spec), 'candidates': records, 'truncated': len(matches) > 16,
+                             'source': 'cached_image_ocr', 'scope': 'label evidence; inspect image before choosing'}
+
+    def _capture_target(self, initial_state=None, verify_after_image=False, sampled_image=None):
+        from .service import Observation, MobileError
+        started = time.monotonic()
+        for attempt in range(1, 3):
+            header, tree = initial_state if initial_state is not None else self._state()
+            initial_state = None
+            capture = {'tree_at': datetime.now(timezone.utc).isoformat(),
+                       'image_at': None, 'image_size': None, 'attempts': attempt}
+            png, size = b'', None
+            hint = self._image_hint
+            if self._input_id and (self._validation_result or {}).get('kind') in ('visual', 'drag'):
+                hint = 'visual_action'
+            reasons, visual_regions = image_evidence(header, tree, self._last_observation,
+                                                    recovering=attempt > 1, hint=hint)
+            if sampled_image is not None:
+                reasons.append('visual_recovery')
+            capture_image = self._image_policy == 'always' or (self._image_policy == 'auto' and bool(reasons))
+            capture.update(image_policy=self._image_policy, image_reasons=reasons,
+                           visual_regions=visual_regions)
+            if sampled_image is not None and sampled_image['header'] == header:
+                png, size = sampled_image['png'], sampled_image['size']
+                capture.update(image_at=sampled_image['image_at'], image_size=list(size),
+                               image_source='visual_validation', screenshot_ms=0)
+                capture_image = True
+            elif capture_image:
+                at = time.monotonic()
+                png, size = self._read('screenshot')
+                capture.update(image_at=datetime.now(timezone.utc).isoformat(),
+                               image_size=list(size), screenshot_ms=round((time.monotonic()-at)*1000))
+            sampled_image = None  # Never reuse across a failed consistency check.
+            if capture_image and verify_after_image:
+                after,tree=self._state()
+                capture['tree_at']=datetime.now(timezone.utc).isoformat()
+            else:
+                after = self._read('header')
+            coherent = header == after and (size is None or size == (header['width'],header['height']))
+            capture.update(checked_at=datetime.now(timezone.utc).isoformat(),
+                           total_ms=round((time.monotonic()-started)*1000))
+            obs = Observation(uuid.uuid4().hex[:16], time.monotonic(), header, tree.elements,
+                              tree.digest, png, None, tree, actionable=coherent,
+                              consistency='sampled' if coherent else 'inconsistent',
+                              capture=capture, validation_mode='target',
+                              image_reasons=reasons,
+                              issues=[] if coherent else [{'reason':'Foreground/display changed during capture'}])
+            if coherent:
+                return obs
+            if self.cancel.is_set():
+                raise MobileError('Stopped during capture')
+        return obs
+
+    def _visual_guard(self, old, header, bounds):
+        from .service import MobileError
+        if not old.png:
+            raise MobileError('Visual coordinates require an inspected image. Call observe(image="always")',
+                              stage='preflight', code='image_required')
+        png, size = self._read('screenshot')
+        image_at = datetime.now(timezone.utc).isoformat()
+        if size != (header['width'],header['height']) or self._read('header') != header:
+            raise MobileError('Display changed during visual validation', stage='preflight', code='display_changed')
+        with Image.open(io.BytesIO(old.png)) as before, Image.open(io.BytesIO(png)) as after:
+            delta = ImageChops.difference(before.convert('RGB').crop(bounds), after.convert('RGB').crop(bounds))
+            mean = max(ImageStat.Stat(delta).mean)
+            channels=delta.split()
+            peak=ImageChops.lighter(ImageChops.lighter(channels[0],channels[1]),channels[2])
+            hot=sum(peak.histogram()[25:]) / (delta.width*delta.height)
+        if mean > 4 or hot > .02:
+            # The validation frame already shows why this input is rejected. Reuse
+            # it with a fresh tree, only while its foreground/display still agrees.
+            recovery = None
+            current = self._state()
+            if current[0] == header:
+                recovery = self._remember_observation(self._capture_target(
+                    initial_state=current, sampled_image={
+                        'png': png, 'size': size, 'image_at': image_at, 'header': header}))
+            raise MobileError('Visual target region changed. Inspect a fresh image before choosing coordinates',
+                              partial_observation=recovery,
+                              stage='preflight', code='visual_changed',
+                              visual={'region':list(bounds), 'mean_channel_delta':round(mean,2),
+                                      'changed_fraction':round(hot,4)})
+        return {'region':list(bounds), 'mean_channel_delta':round(mean,2), 'changed_fraction':round(hot,4)}
+
+    def _relocate_visual(self, old, header, region, spec, context_ids, tree):
+        """Resolve once locally; at most two read-only attempts, never retry input."""
+        from .service import MobileError
+        engine = self._vision
+        if engine is None:
+            self._vision = engine = LocalVision()
+        if not old.png:
+            raise MobileError('Visual relocation requires an inspected image',
+                              stage='preflight', code='image_required')
+        started = time.monotonic()
+        frame = None
+        try:
+            wanted = (spec.text, spec.context_text)
+            reference_labels = self._cached_visual_labels(old, spec)
+            reference = bind_reference(reference_labels, spec, region,
+                                       (header['width'], header['height']), old.tree.graph)
+            self._record_time('visual_reference_ms', started)
+            search_started = time.monotonic()
+
+            def capture():
+                self._current_observation(old.id)  # age, cancellation and connection
+                png, size = self._read('screenshot')
+                at = datetime.now(timezone.utc).isoformat()
+                if size != (header['width'], header['height']) or self._read('header') != header:
+                    raise targets.TargetError('foreground_changed', 'Display/foreground changed during visual search')
+                return {'png': png, 'size': size, 'header': header, 'image_at': at}
+
+            frame = capture()
+            for attempt in range(1, 3):
+                labels = engine.read(frame['png'], texts=wanted, region=spec.search_bounds)
+                try:
+                    target, contexts = relocate(labels, spec, reference, frame['size'], tree.graph)
+                except targets.TargetError as exc:
+                    if exc.code != 'visual_target_missing' or attempt == 2:
+                        raise
+                    frame = capture()
+                    current_header, tree = self._state()
+                    if current_header != header:
+                        raise targets.TargetError('foreground_changed', 'Foreground changed during visual search')
+                    continue  # A transient absent label can settle locally; never retry input.
+                checked = capture()
+                consistent = all(stationary(frame['png'], checked['png'], item.bounds)
+                                 for item in (target, *contexts))
+                frame = checked
+                if time.monotonic()-search_started > 8:
+                    raise targets.TargetError('visual_search_timeout', 'Local visual search exceeded eight seconds')
+                if not consistent:
+                    continue
+                current_header, tree = self._state()
+                if current_header != header or self._read('header') != header:
+                    raise targets.TargetError('foreground_changed', 'Foreground changed after local visual search')
+                previous, current = old.tree.graph, tree.graph
+                target, contexts = relocate(labels, spec, reference, frame['size'], current)
+                targets.check_layout(previous, current, reference.regions,
+                                     [target.bounds, *(c.bounds for c in contexts)])
+                old_dialogs = {(targets.identity(n), n.bounds) for n in previous.nodes if 'Dialog' in n.attrs.get('class', '')}
+                if any('Dialog' in n.attrs.get('class', '') and (targets.identity(n), n.bounds) not in old_dialogs
+                       for n in current.nodes if n.visible):
+                    raise targets.TargetError('window_changed', 'A dialog appeared during local visual search')
+                for eid in context_ids or []:
+                    element = next(e for e in old.elements[:250] if e.id == eid)
+                    targets.resolve(previous, current, element.node_index)
+                self._current_observation(old.id)
+                evidence = {'method': 'local_ocr_context', 'attempts': attempt,
+                            'text': spec.text, 'context_text': spec.context_text,
+                            'previous_bounds': list(reference.target.bounds), 'resolved_bounds': list(target.bounds),
+                            'context_bounds': [list(c.bounds) for c in contexts], 'confidence': round(target.score, 3),
+                            'binding': 'container_and_labels' if reference.container else 'search_region_and_labels',
+                            'confirmation': 'fresh_local_pixels',
+                            'search_ms': round((time.monotonic()-search_started)*1000)}
+                return target.bounds, evidence
+            raise targets.TargetError('visual_unstable', 'Visual target moved during both local confirmation attempts')
+        except targets.TargetError as exc:
+            recovery = None
+            if frame is not None and not self.cancel.is_set():
+                current = self._state()
+                if current[0] == header:
+                    recovery = self._remember_observation(self._capture_target(initial_state=current, sampled_image=frame))
+            diagnostic = {}
+            if frame is None:
+                diagnostic = {'reference_bounds': list(region), 'reference_observation_id': old.id,
+                              'reference_labels': [{'text': v.text[:200], 'score': round(v.score, 3),
+                                                    'bounds': list(v.bounds)} for v in locals().get('reference_labels', [])[:16]]}
+                if self.save_screenshots:
+                    path = self.run_dir / f'{old.id}-visual-reference.png'
+                    path.write_bytes(old.png)
+                    diagnostic['reference_image'] = str(path)
+            raise MobileError(str(exc), stage='preflight', code=exc.code, partial_observation=recovery,
+                              visual_diagnostic=diagnostic) from None
+        finally:
+            self._record_time('visual_local_ms', started)
+
+    def _validate_target(self, observation_id, kind, element=None, region=None, context_ids=None, container_index=None,
+                         visual_target=None, readiness=None):
+        from .service import MobileError
+        started = time.monotonic()
+        self._validation_result = None
+        try:
+            old = self._current_observation(observation_id)
+            bounds = None
+            evidence = {'kind':kind, 'status':'ready', 'scope':'device'}
+            if kind in ('launch','home'):
+                if not self._read('header')['screen_on']:
+                    raise MobileError('Device screen is off. Unlock manually', stage='preflight')
+                self._validation_result = evidence
+                return old, None
+            header, tree = self._state()
+            if header != old.header:
+                raise MobileError('Display or foreground app changed', stage='preflight', code='foreground_changed')
+            previous, current = old.tree.graph, tree.graph
+            for eid in context_ids or []:
+                e = next((e for e in old.elements[:250] if e.id == eid), None)
+                if e is None:
+                    raise targets.TargetError('context_missing','Context ID is absent from the inspected observation')
+                targets.resolve(previous,current,e.node_index)
+            if element is not None:
+                index = targets.resolve(previous,current,element.node_index,allow_empty=kind=='type')
+                bounds = targets.check_target(previous,current,element.node_index,index)
+                if readiness is not None:
+                    header, tree, index, bounds, ready_evidence = confirm_target(
+                        header, tree, index, sample=lambda: self._sequence_check(header, [header['package']], tree=True),
+                        cancel=self.cancel, now=time.monotonic,
+                        deadline=time.monotonic()+readiness.timeout_seconds, options=readiness)
+                    current = tree.graph
+                    # Additional facts remain bound through the readiness wait.
+                    for eid in context_ids or []:
+                        e = next(e for e in old.elements[:250] if e.id == eid)
+                        targets.resolve(previous, current, e.node_index)
+                    evidence['readiness'] = ready_evidence
+                if kind == 'type':
+                    n = current.nodes[index]
+                    if n.attrs.get('focused') != 'true' or not (
+                            n.attrs.get('editable') == 'true' or 'EditText' in n.attrs.get('class','')):
+                        raise targets.TargetError('focus_changed','The observed field is no longer focused and editable')
+                evidence.update(scope='target_identity_context_visibility_windows',
+                                status='relocated' if bounds != element.bounds else 'ready',
+                                previous_bounds=list(element.bounds), resolved_bounds=list(bounds))
+            else:
+                regions = [region] if region is not None else None
+                if visual_target is not None:
+                    bounds, visual = self._relocate_visual(old, header, region, visual_target, context_ids, tree)
+                    evidence.update(scope='window_and_visual_text_context', visual=visual,
+                                    status='relocated' if visual['previous_bounds'] != list(bounds) else 'ready',
+                                    previous_bounds=visual['previous_bounds'], resolved_bounds=list(bounds))
+                elif kind in ('visual','drag'):
+                    targets.check_layout(previous, current, regions, regions)
+                    evidence.update(scope='window_and_local_pixels', visual=self._visual_guard(old,header,region))
+                else:
+                    targets.check_layout(previous, current, regions, regions)
+                    evidence['scope'] = 'window_and_navigation_surface'
+                if kind == 'swipe':
+                    evidence['scope']=targets.check_scroll(previous,current,region,container_index)
+            # A header read is cheap relative to XML; avoid input after a foreground race.
+            if self._read('header') != header:
+                raise targets.TargetError('foreground_changed','Foreground/display changed during validation')
+            self._validation_result = evidence
+            self._log('preflight_target', observation_id=old.id, **evidence)
+            return old,bounds
+        except targets.TargetError as exc:
+            raise MobileError(str(exc), stage='preflight', code=exc.code) from None
+        finally:
+            self._record_time('validation_ms', started)

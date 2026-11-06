@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mobile-use",
+  "version": "0.11.0",
+  "description": "Operate an explicitly selected Android device through local ADB, screenshots and reproducible gestures.",
+  "author": {"name": "Mobile Use"},
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Mobile Use",
+        "shortDescription": "Operate your Android device",
+        "longDescription": "A local MCP service for Android observation, taps, scrolling, dragging and verified actions. Requires Python, uv and an already authorized ADB device.",
+        "developerName": "Mobile Use",
+        "category": "Developer Tools",
+        "capabilities": ["Interactive"],
+        "defaultPrompt": "Use Mobile Use to inspect my connected Android device and complete the task I describe."
+      }
+    }
+  }
+}

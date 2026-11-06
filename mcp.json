@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "mobile-use": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "${PLUGIN_ROOT}", "--frozen", "mobile-use"],
+      "cwd": "${PLUGIN_ROOT}",
+      "env": {"PYTHONIOENCODING": "utf-8"}
+    }
+  }
+}
