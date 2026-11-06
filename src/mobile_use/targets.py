@@ -161,6 +161,12 @@ def windows(graph,region=None):
                    if n.parent is None and n.visible and area(n.bounds)
                    and (region is None or intersects(n.bounds,region)))
 
+def visual_hit_controls(graph, region):
+    """Native touch recipients over an OCR label; unrelated screen changes do not matter."""
+    return Counter((identity(n), tuple(identity(graph.nodes[j],container=True) for j in graph.ancestors(i)))
+                   for i,n in enumerate(graph.nodes) if n.visible and intersects(n.bounds,region)
+                   and any(n.attrs.get(k)=='true' for k in ('clickable','long-clickable','editable')))
+
 def covering(graph,index,region):
     branch=index
     for i in [index,*graph.ancestors(index)]:

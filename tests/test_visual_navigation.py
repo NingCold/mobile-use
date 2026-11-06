@@ -185,3 +185,97 @@ def test_outer_navigation_does_not_repeat_failed_continuation_recovery(svc, cloc
     assert r.is_error and len(svc.driver.events)==1
     assert len(reads)==1
     assert r.structured_content['input_status']=='sent'
+
+
+def choice_step():
+    return visual_step(visual_target=None, visual_target_any_of={'candidates':[
+        {'text':'Open','context_text':'Report A'}, {'text':'Preview','context_text':'Report A'}],
+        'search_bounds':[0, 30, 100, 198]})
+
+
+def competing(frame_and_labels):
+    import io
+    from PIL import Image, ImageDraw
+    from mobile_use.vision import Label
+    png, labels = frame_and_labels
+    img = Image.open(io.BytesIO(png)).convert('RGB')
+    ImageDraw.Draw(img).text((22, 171), 'Preview', fill='black')
+    output = io.BytesIO(); img.save(output, format='PNG')
+    return output.getvalue(), [*labels, Label('Preview', .99, (22,171,65,185))]
+
+
+@pytest.mark.parametrize('mode', ['unique', 'unknown', 'wrong_context', 'new_competitor',
+                                   'different_winner', 'motion', 'dialog', 'overlay', 'busy'])
+def test_choice_evaluates_one_shared_frame_and_confirms_all_competitors(svc, clock, mode):
+    first = frame(95, text='Preview' if mode=='unique' else 'Open')
+    second = first
+    if mode in ('unknown','busy'): first = frame(95,text='Other')
+    if mode == 'wrong_context': first = frame(95,context='Report B')
+    if mode == 'new_competitor': second = competing(first)
+    if mode == 'different_winner': second = frame(95,text='Preview')
+    if mode == 'motion': second = frame(133)
+    if mode == 'busy': svc.driver.xml = scene(extra=node(bounds='[2,153][9,165]', **{'class':'android.widget.ProgressBar'}))
+    oid = observe(svc)
+    install_visual(svc, [first, second, second])
+    if mode == 'overlay':
+        screenshot=svc.driver.screenshot
+        def layer():
+            if reads:
+                svc.driver.xml=scene(extra=node(rid='shield',bounds='[29,94][72,112]',clickable='true'))
+            return screenshot()
+        svc.driver.screenshot=layer
+    read = svc._vision.read
+    reads = []
+    def counted(png, texts, region):
+        reads.append(png)
+        assert set(texts) == {'Open','Preview','Report A'} and region == [0,30,100,198]
+        if mode == 'dialog': svc.driver.xml = scene(extra=node(**{'class':'android.app.Dialog'}))
+        return read(png,texts=texts,region=region)
+    svc._vision.read = counted
+    # Include an already-sent step. Refusing the tap must not repeat that input.
+    r = invoke(svc.navigate,oid,plan(tap_step(),choice_step()),image='auto')
+    ok = mode in ('unique','motion','busy')
+    d = r.structured_content; step = d['navigation']['steps'][-1]
+    assert (not r.is_error) == ok, d
+    assert len(svc.driver.events) == 1 + int(ok)
+    assert step['input_status'] == ('sent' if ok else 'not_sent')
+    v = step['visual']
+    assert v['ocr_reads'] == len(reads) and len(reads) <= 2
+    if mode in ('unknown','wrong_context'):
+        assert v['code']=='visual_target_missing' and v['captures']==1
+        assert d['reads']['screenshot']==1 and d['observation']['image']['available']
+    if mode=='new_competitor': assert v['code']=='visual_target_ambiguous' and v['captures']==2
+    if mode=='different_winner': assert v['code']=='visual_context_changed'
+    if mode=='overlay': assert v['code']=='visual_hit_changed'
+    if ok:
+        assert v['captures']==(2 if mode=='unique' else 3)
+        assert v['text']==('Preview' if mode=='unique' else 'Open')
+        assert len(reads)==(1 if mode=='unique' else 2)
+        if mode=='motion': assert svc.driver.events[-1].points[0][1]>=133
+
+
+def test_choice_schema_and_all_late_bounds_are_checked_before_input(svc, clock):
+    import copy
+    async def run():
+        async with Client(create_server(svc)) as client:
+            definitions = next(t for t in (await client.list_tools()).tools if t.name=='navigate').input_schema['$defs']
+            assert 'visual_target_any_of' in definitions['NavigationStep']['properties']
+            caps = (await client.call_tool('get_status',{})).structured_content['capabilities']
+            assert caps['visual_target_any_of']
+            base=choice_step()
+            for change in ('duplicate','length','region','candidate_region','page','exclusive','swipe'):
+                step=copy.deepcopy(base); choice=step['visual_target_any_of']
+                if change=='duplicate': choice['candidates'][1]['text']=' O pen '
+                if change=='length': choice['candidates']*=2
+                if change=='region': choice['search_bounds'][2]=101
+                if change=='candidate_region': choice['candidates'][0]['search_bounds']=[0,0,30,30]
+                if change=='page': del step['when']
+                if change=='exclusive': step['target']={'text':'go'}
+                if change=='swipe': step['kind']='swipe'
+                r=await client.call_tool('navigate',{'observation_id':observe(svc),'plan':plan(tap_step(),step)})
+                assert r.is_error and not svc.driver.events,change
+            install_visual(svc,[frame(95,text='Preview')])
+            r=await client.call_tool('navigate',{'observation_id':observe(svc),'plan':plan(base),
+                'follow_up':follow(),'image':'never'})
+            assert not r.is_error and r.structured_content['continuation']['timing']['anchor']=='input_sent'
+    asyncio.run(run())

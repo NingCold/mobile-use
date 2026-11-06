@@ -25,12 +25,44 @@ class VisualTarget:
 
 
 @dataclass
-class NavigationVisualTarget:
-    """Declared visual action on a known page; item context when the task needs it."""
+class VisualAction:
+    """Exact authorized action label and optional identifying context."""
     text: str
     context_text: str | None = None
+    __pydantic_config__ = {'extra': 'forbid'}
+
+
+@dataclass
+class NavigationVisualTarget(VisualAction):
     search_bounds: list[int] | None = None
     __pydantic_config__ = {'extra': 'forbid'}
+
+
+@dataclass
+class VisualTargetAnyOf:
+    candidates: list[VisualAction]
+    search_bounds: list[int] | None = None
+    __pydantic_config__ = {'extra': 'forbid'}
+
+    def selectors(self):
+        return [NavigationVisualTarget(c.text, c.context_text, self.search_bounds) for c in self.candidates]
+
+
+def visual_choices_option(value, width, height):
+    if isinstance(value, dict):
+        value = VisualTargetAnyOf(**value)
+    if not isinstance(value, VisualTargetAnyOf) or not isinstance(value.candidates, list) or not 2 <= len(value.candidates) <= 3:
+        raise ValueError('visual_target_any_of requires 2..3 exact alternatives')
+    value.candidates = [VisualAction(**c) if isinstance(c, dict) else c for c in value.candidates]
+    if not all(isinstance(c, VisualAction) and not isinstance(c, NavigationVisualTarget) for c in value.candidates):
+        raise ValueError('Each alternative takes text and optional context_text; search_bounds is shared')
+    seen = set()
+    for spec in value.selectors():
+        navigation_visual_option(spec, width, height)
+        seen.add(''.join(spec.text.split()))
+    if len(seen) != len(value.candidates):
+        raise ValueError('Use distinct action labels; visual alternatives share one search region')
+    return value
 
 
 def navigation_visual_option(value, width, height):
@@ -131,6 +163,7 @@ class NavigationStep:
     timeout_seconds: float = 5
     readiness: TapReadiness | None = None
     visual_target: NavigationVisualTarget | None = None
+    visual_target_any_of: VisualTargetAnyOf | None = None
     __pydantic_config__ = {'extra': 'forbid'}
 
 
@@ -168,17 +201,20 @@ def navigation_option(value):
             if step.when.package and step.when.package != step.package:
                 raise ValueError('when.package must match the step package')
         if step.kind == 'tap':
-            if (step.target is None) == (step.visual_target is None):
-                raise ValueError('Navigation tap requires target OR visual_target')
+            if sum(v is not None for v in (step.target, step.visual_target, step.visual_target_any_of)) != 1:
+                raise ValueError('Navigation tap requires exactly one of target, visual_target or visual_target_any_of')
             if step.target is not None:
                 step.target = target_option(step.target)
             else:
-                step.visual_target = navigation_visual_option(step.visual_target, 2**31-1, 2**31-1)
+                if step.visual_target_any_of is not None:
+                    step.visual_target_any_of = visual_choices_option(step.visual_target_any_of, 2**31-1, 2**31-1)
+                else:
+                    step.visual_target = navigation_visual_option(step.visual_target, 2**31-1, 2**31-1)
                 if not step.when or not step.when.text:
                     raise ValueError('Visual navigation tap requires a known accessible page condition')
                 if step.visual_when is not None:
                     raise ValueError('Use visual_target context, not visual_when, on visual tap')
-        elif step.target is not None or step.visual_target is not None:
+        elif any(v is not None for v in (step.target, step.visual_target, step.visual_target_any_of)):
             raise ValueError('target/visual_target is only supported on navigation tap')
         if step.readiness is not None:
             if step.kind != 'tap' or step.target is None:

@@ -5,8 +5,8 @@ import time
 
 from . import targets
 from .gestures import check_point, swipe_plan, tap_plan
-from .options import visual_target_option, navigation_visual_option, WaitCondition, TapReadiness
-from .vision import LocalVision, unique, stationary, bind_declared, relocate
+from .options import visual_target_option, navigation_visual_option, visual_choices_option, WaitCondition, TapReadiness
+from .vision import LocalVision, unique, stationary, bind_declared, choose_declared, same_search_pixels, relocate
 from .readiness import confirm_target
 
 
@@ -47,23 +47,43 @@ class LocalNavigation:
                 visual_target_option(step.visual_when, header['width'], header['height'])
             if step.visual_target:
                 navigation_visual_option(step.visual_target, header['width'], header['height'])
+            if step.visual_target_any_of:
+                visual_choices_option(step.visual_target_any_of, header['width'], header['height'])
 
     def _navigation_visual_target(self, baseline, packages, step, header, tree, deadline, row):
         """Resolve declared intent on a future page; bounded reads, no old pixel box."""
         from .service import MobileError
         if self._vision is None:
             self._vision = LocalVision()
+        choices = step.visual_target_any_of
+        specs = choices.selectors() if choices else [step.visual_target]
         spec = step.visual_target
+        region = specs[0].search_bounds
+        wanted = tuple(dict.fromkeys(v for s in specs for v in (s.text, s.context_text) if v is not None))
         started = time.monotonic()
         deadline = min(deadline, started + 8)
         frame, reference, reference_tree = None, None, None
         labels = []
         labels_image_at = None
-        captures = 0
+        captures = ocr_reads = 0
+
+        def recognize(sample):
+            nonlocal labels_image_at, ocr_reads
+            if 'labels' not in sample:
+                ocr_reads += 1
+                sample['labels'] = self._vision.read(sample['png'], texts=wanted, region=region)
+            labels_image_at = sample['image_at']
+            return sample['labels']
+
+        def page_tree():
+            current_header, current = self._sequence_check(baseline, packages, tree=True)
+            if current_header != header or not self._matches(step.when, header, current.elements):
+                raise MobileError('Visual navigation page condition changed')
+            return current
 
         def capture():
             nonlocal captures
-            if self.cancel.is_set() or time.monotonic() >= deadline or captures >= 4:
+            if self.cancel.is_set() or time.monotonic() >= deadline or captures >= (3 if choices else 4):
                 raise targets.TargetError('visual_search_timeout', 'Visual resolution exhausted its local budget')
             png, size = self._read('screenshot')
             captures += 1
@@ -75,43 +95,60 @@ class LocalNavigation:
         try:
             frame = capture()
             while True:
-                wanted = tuple(v for v in (spec.text, spec.context_text) if v is not None)
-                labels = self._vision.read(frame['png'], texts=wanted, region=spec.search_bounds)
-                labels_image_at = frame['image_at']
+                labels = recognize(frame)
                 # A future page has no inspected old container to preserve. Bind
                 # its FIRST reference after OCR, not to a pre-OCR transition tree.
                 # Once bound, subsequent samples must preserve that identity.
-                sampled_header, tree = self._sequence_check(baseline, packages, tree=True)
-                if sampled_header != header or not self._matches(step.when, header, tree.elements):
-                    raise MobileError('Visual navigation page condition changed')
+                tree = page_tree()
+                if choices:
+                    frame['page_graph'] = tree.graph
                 try:
                     if reference is None:
-                        reference = bind_declared(labels, spec, frame['size'], tree.graph)
+                        if choices:
+                            spec, reference = choose_declared(labels, specs, frame['size'], tree.graph)
+                        else:
+                            reference = bind_declared(labels, spec, frame['size'], tree.graph)
                         reference_tree = tree
                     target, contexts = relocate(labels, spec, reference, frame['size'], tree.graph)
                 except targets.TargetError as exc:
                     if exc.code != 'visual_target_missing':
                         raise
+                    if choices and (captures != 1 or reference is not None or not any(
+                        n.visible and n.attrs.get('class') == 'android.widget.ProgressBar'
+                        and targets.intersects(n.bounds, region or (0, 0, *frame['size']))
+                        for n in tree.graph.nodes)):
+                        raise  # Unknown content is a decision point, not a timeout per label.
                     self.cancel.wait(min(.2, max(0, deadline-time.monotonic())))
-                    current_header, tree = self._sequence_check(baseline, packages, tree=True)
-                    if current_header != header or not self._matches(step.when, header, tree.elements):
-                        raise MobileError('Visual navigation page condition changed')
+                    tree = page_tree()
                     frame = capture()
                     continue
                 checked = capture()
                 stable = all(stationary(frame['png'], checked['png'], v.bounds) for v in (target, *contexts))
-                frame = checked
-                current_header, current = self._sequence_check(baseline, packages, tree=True)
-                if current_header != header or not self._matches(step.when, header, current.elements):
-                    raise MobileError('Visual navigation page condition changed')
+                previous, frame = frame, checked
+                if choices:
+                    if same_search_pixels(previous['png'], checked['png'], region):
+                        checked['labels'] = labels
+                    labels = recognize(checked)
+                current = page_tree()
+                if choices:
+                    frame['page_graph'] = current.graph
+                    confirmed, _ = choose_declared(labels, specs, frame['size'], current.graph)
+                    if confirmed != spec:
+                        raise targets.TargetError('visual_context_changed', 'The matched alternative changed during confirmation')
                 row['visual_windows'] = {
                     'bound': [dict(identity=list(targets.identity(n, container=True)), bounds=list(n.bounds))
                               for n in reference_tree.graph.nodes if n.parent is None and n.visible],
                     'current': [dict(identity=list(targets.identity(n, container=True)), bounds=list(n.bounds))
                                 for n in current.graph.nodes if n.parent is None and n.visible]}
+                prior_bounds = target.bounds
                 target, contexts = relocate(labels, spec, reference, frame['size'], current.graph)
+                if choices and prior_bounds != target.bounds:
+                    stable = False
                 regions = [target.bounds, *(c.bounds for c in contexts)]
                 targets.check_layout(reference_tree.graph, current.graph, reference.regions, regions)
+                if choices and targets.visual_hit_controls(current.graph, target.bounds) != targets.visual_hit_controls(
+                        reference_tree.graph, reference.target.bounds):
+                    raise targets.TargetError('visual_hit_changed', 'A touch control over the visual target changed')
                 tree = current
                 if not stable:
                     continue  # Reuse the confirmation frame; never replay input.
@@ -125,22 +162,36 @@ class LocalNavigation:
                                  'captures': captures, 'confirmation': 'fresh_local_pixels',
                                  'context_source': 'visual_item' if spec.context_text else 'declared_accessible_page',
                                  'search_ms': round((time.monotonic()-started)*1000)}
+                if choices:
+                    row['visual'].update(candidate_count=len(specs), ocr_reads=ocr_reads,
+                                         confirmation='unique_in_confirmed_scope')
                 row.pop('visual_windows', None)  # Full topology is useful only on failure.
                 return header, tree, target.bounds
         except Exception as exc:
-            row['visual'] = {'text': spec.text, 'context_text': spec.context_text, 'captures': captures,
+            row['visual'] = {'text': spec.text if spec else None, 'context_text': spec.context_text if spec else None, 'captures': captures,
                              'code': getattr(exc, 'code', type(exc).__name__),
                              'search_ms': round((time.monotonic()-started)*1000),
                              'labels_image_at': labels_image_at,
                              'sampled_labels': [{'text': v.text[:200], 'score': round(v.score, 3),
                                                  'bounds': list(v.bounds)} for v in labels[:16]],
                              'labels_truncated': len(labels) > 16}
+            if choices:
+                row['visual'].update(candidate_count=len(specs), ocr_reads=ocr_reads)
             recovery = None
             if frame is not None and not self.cancel.is_set():
                 try:
                     current = self._state()
                     if current[0] == header:
-                        recovery = self._remember_observation(self._capture_target(initial_state=current, sampled_image=frame))
+                        sample = frame
+                        if choices:
+                            g = frame.get('page_graph')
+                            if (g is None or targets.windows(g) != targets.windows(current[1].graph)
+                                    or not self._matches(step.when, header, current[1].elements)
+                                    or any(n.visible and 'Dialog' in n.attrs.get('class', '')
+                                           for n in current[1].graph.nodes)):
+                                sample = None  # Do not present the old screen as the new window.
+                        recovery = self._remember_observation(self._capture_target(
+                            initial_state=current, sampled_image=sample, verify_after_image=sample is None))
                 except Exception:
                     pass
             raise MobileError(str(exc), partial_observation=recovery, code=row['visual']['code'],
@@ -209,7 +260,7 @@ class LocalNavigation:
                         if readiness['layout_updates']:
                             row['layout_updates'] = readiness['layout_updates']
                         element = next(e for e in tree.elements if e.node_index == idx)
-                    if ready and step.visual_target:
+                    if ready and (step.visual_target or step.visual_target_any_of):
                         header, tree, visual_bounds = self._navigation_visual_target(
                             baseline, plan.allowed_packages, step, header, tree, step_deadline, row)
                     if ready and step.kind != 'launch':

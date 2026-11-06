@@ -206,6 +206,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                                  "tap_follow_up": True, "back_sequence": True,
                                  "local_navigation": self.validation_mode == 'target',
                                  "visual_navigation": self.validation_mode == 'target',
+                                 "visual_target_any_of": self.validation_mode == 'target',
                                  "navigation_follow_up": self.validation_mode == 'target',
                                  "visual_candidates": self.validation_mode == 'target',
                                  "rejection_observation": True, "focus": True, "call_timings": True,

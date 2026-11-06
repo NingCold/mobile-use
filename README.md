@@ -36,6 +36,7 @@ codex mcp add mobile-use --env PYTHONIOENCODING=utf-8 -- uv run --directory "$pr
 - **有文字的控件**：用 `observe(detail="brief", image="auto")` 看当前页，再把最新的 `observation_id` 和已看到的 `element_id` 交给 `tap`。明确身份的按钮可在位置变化后重新定位；不会因为旁边的倒计时变了就把整页判为失效。
 - **自绘页面**：先看图。已看清文字和所属卡片时，可用[本地 OCR 定位](skills/mobile-use/references/visual-targets.md)；遇到多个匹配、遮挡或窗口变化时停止。不要猜坐标。
 - **已知路径**：用 [navigate](skills/mobile-use/references/navigation.md) 声明允许的应用、页面条件和目标。刷新会移动按钮时，只等目标位置稳定。不要在每次切页后机械地追加一次观察。
+- **同一动作有几种按钮文案**：如果已知文档页可能写着“打开”或“预览”，而两者都是本次允许的操作，可声明[一组精确候选](skills/mobile-use/references/navigation.md#when-a-known-page-has-alternate-button-labels)。服务在同一画面找全部候选；只有唯一匹配且复核通过才点击。两者同时出现时交回判断。
 - **异常或中断**：先看动作是否已经发送。已发送或结果未知时，核对当前状态，不要重放整段。需要更多文字时，先用 `get_observation` 展开最近一次的缓存；它不刷新屏幕，也不会延长观察有效期。
 
 ## 数据留在哪里

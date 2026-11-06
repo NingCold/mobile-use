@@ -45,6 +45,17 @@ def stationary(before, after, bounds):
     return mean <= 4 and fraction <= .02
 
 
+def same_search_pixels(before, after, region):
+    """Exact equality across the competition area, not a fuzzy check of just the winner."""
+    if before == after:
+        return True
+    with Image.open(io.BytesIO(before)) as a, Image.open(io.BytesIO(after)) as b:
+        left, right = a.convert('RGB'), b.convert('RGB')
+        if region:
+            left, right = left.crop(region), right.crop(region)
+        return ImageChops.difference(left, right).getbbox() is None
+
+
 class LocalVision:
     """One lazy CPU engine per service. Models are wheel-local; no network fallback."""
     def __init__(self):
@@ -207,3 +218,19 @@ def bind_declared(labels, spec, size, graph):
                 candidates.append((area(n.bounds), key))
     key = min(candidates, key=lambda v:v[0])[1] if candidates else None
     return VisualBinding(target, (), key)
+
+
+def choose_declared(labels, specs, size, graph):
+    """All alternatives see the same labels. Only an absent candidate is skippable."""
+    found = []
+    for spec in specs:
+        try:
+            found.append((spec, bind_declared(labels, spec, size, graph)))
+        except TargetError as exc:
+            if exc.code != 'visual_target_missing':
+                raise
+    if len(found) > 1:
+        raise TargetError('visual_target_ambiguous', 'Multiple authorized alternatives are visible; inspect the current page')
+    if not found:
+        raise TargetError('visual_target_missing', 'No exact alternative with its required context; inspect the current page')
+    return found[0]

@@ -20,6 +20,28 @@ Use context_text when selecting a particular item, recipient or object. If the t
 
 navigate(...,follow_up={...}) chains the existing bounded timer/returns directly to the final tap acknowledgement. No screenshot/tree observation is inserted before the timer. The final step must be a tap and plan.until/settle_ms must be absent. Navigation has its own budget (up to30s), follow_up timing its own (up to30s); return_back.after may have another bounded navigation budget. Set the client request timeout to cover the complete declared chain, not just one timer. Do not automatically replay a client timeout. One final observation is delivered; inspect navigation and continuation separately, including partial input statuses. Completed navigation can be followed by interrupted timing/returns.
 
+### When a known page has alternate button labels
+
+If `get_status().capabilities.visual_target_any_of` is true, a tap step can declare two or three distinct exact labels for an action the task authorizes. Use **one** search region for all alternatives. For example, a report viewer might label its read-only action differently depending on the document type:
+
+```json
+{
+  "kind": "tap",
+  "package": "org.example.viewer",
+  "when": {"text": "Document details"},
+  "visual_target_any_of": {
+    "candidates": [
+      {"text": "Open", "context_text": "Report A"},
+      {"text": "Preview", "context_text": "Report A"}
+    ]
+  }
+}
+```
+
+Omit `search_bounds` to search the display, or set it once alongside `candidates` to cover the full inspected action area. The alternatives share OCR on each sampled image. A competing match, lost item identity or unexpected window stops the tap. If the search area changes during confirmation, the server checks all candidates again, not just the first match. A clean miss returns the current evidence rather than trying each label until timeout. A visible progress indicator or moving match may require one extra frame. Inspect the interrupted step and the returned observation before continuing; a prior input in the plan may already have been sent.
+
+Use this instead of `target` or `visual_target`, not alongside them. Do not combine unrelated permissions or use alternatives to infer that a swipe reached a different item. Without an independent new-page or item guard, split at the swipe and inspect its result. On hosts without the capability, choose the single inspected target from that result.
+
 ## Prepare before the live segment
 
 For repeated work, load the needed tool signatures and prepare caller-authorized timing, package boundaries, stop conditions and known navigation before opening the first unknown target. Reuse task-owned argument builders in an available persistent runtime; they should return ordinary MCP arguments without connecting another controller, sending input or retrying it. For a short task, reusable in-memory options are enough. No extra per-action preparation call is needed.
