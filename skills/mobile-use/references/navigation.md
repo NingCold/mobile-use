@@ -22,7 +22,7 @@ navigate(...,follow_up={...}) chains the existing bounded timer/returns directly
 
 ### When a known page has alternate button labels
 
-If `get_status().capabilities.visual_target_any_of` is true, a tap step can declare two or three distinct exact labels for an action the task authorizes. Use **one** search region for all alternatives. For example, a report viewer might label its read-only action differently depending on the document type:
+If `get_status().capabilities.visual_target_any_of` is true, a tap step can declare two to six distinct exact labels for an action the task authorizes. Read the running server's `limits.visual_target_candidates`; if the capability is present but the limit is absent, that server accepts up to three. Compare the authorized set in **one** search region. If the set does not fit, inspect the page instead of splitting it across calls: separate batches cannot detect competition between them. For example, a report viewer might label its read-only action differently depending on the document type:
 
 ```json
 {

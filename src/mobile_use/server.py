@@ -375,7 +375,8 @@ def create_server(service: MobileService):
         Check navigation.status and each input_status; never replay a partial sequence.
         A tap may declare visual_target instead of target, with a known when.text page guard.
         Or use visual_target_any_of={candidates:[{text,context_text?},...],search_bounds?}
-        for 2..3 exact authorized alternatives. One common search region; competing matches
+        for 2 or more exact authorized alternatives (max: get_status().limits.visual_target_candidates).
+        All labels share one search region and OCR sample; competing matches
         stop before tap. A successful swipe alone does not establish the next page.
         Exact OCR labels/context are resolved locally, without model-provided pixel boxes.
         Optional follow_up starts at the final tap acknowledgement, without intermediate capture;

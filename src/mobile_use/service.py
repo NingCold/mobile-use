@@ -18,7 +18,7 @@ from filelock import FileLock, Timeout
 from .driver import AndroidDriver
 from .gestures import check_point, swipe_plan, tap_plan
 from . import __version__
-from .options import WaitCondition, condition, seconds, focus_option, target_option
+from .options import MAX_VISUAL_ALTERNATIVES, WaitCondition, condition, seconds, focus_option, target_option
 from .delivery import element_page, brief_observation
 from . import targets
 from .validation import TargetValidation
@@ -226,6 +226,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                 "limits": {"wait_seconds": 30, "settle_ms": 2000, "observation_age_seconds": self.max_age_seconds,
                            "back_count": 3, "back_interval_ms": [200, 2000],
                            "navigation_steps": 8, "navigation_seconds": 30,
+                           "visual_target_candidates": MAX_VISUAL_ALTERNATIVES if self.validation_mode == 'target' else 0,
                            "compact_image_max_edge": 1280, "compact_label_characters": 256,
                            "cached_page_elements": 250},
                 "trace_dir": str(self.run_dir)}

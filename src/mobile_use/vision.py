@@ -89,6 +89,8 @@ class LocalVision:
         decoded = 0
         if result.boxes is None:
             return labels
+        lengths = {sum(1 if unicodedata.east_asian_width(c) in ('W', 'F') else .55
+                       for c in normalized(text)) for text in texts}
         for index, box in enumerate(result.boxes):
             l, t = np.floor(box.min(axis=0)).astype(int)
             r, b = np.ceil(box.max(axis=0)).astype(int)
@@ -101,8 +103,6 @@ class LocalVision:
                 # unrelated paragraphs: long lines dominate recognition cost.
                 # Wide bounds accommodate proportional fonts and OCR padding.
                 ratio = (r-l)/(b-t)
-                lengths = [sum(1 if unicodedata.east_asian_width(c) in ('W', 'F') else .55
-                               for c in normalized(text)) for text in texts]
                 if not any(max(.15, length*.3) <= ratio <= max(2, length*1.5) for length in lengths):
                     continue
                 if decoded >= 64:

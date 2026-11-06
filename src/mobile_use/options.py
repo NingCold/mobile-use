@@ -4,6 +4,8 @@ from typing import Literal
 import math
 import re
 
+MAX_VISUAL_ALTERNATIVES = 6
+
 
 @dataclass
 class TargetSelector:
@@ -51,8 +53,9 @@ class VisualTargetAnyOf:
 def visual_choices_option(value, width, height):
     if isinstance(value, dict):
         value = VisualTargetAnyOf(**value)
-    if not isinstance(value, VisualTargetAnyOf) or not isinstance(value.candidates, list) or not 2 <= len(value.candidates) <= 3:
-        raise ValueError('visual_target_any_of requires 2..3 exact alternatives')
+    if (not isinstance(value, VisualTargetAnyOf) or not isinstance(value.candidates, list)
+            or not 2 <= len(value.candidates) <= MAX_VISUAL_ALTERNATIVES):
+        raise ValueError(f'visual_target_any_of requires 2..{MAX_VISUAL_ALTERNATIVES} exact alternatives')
     value.candidates = [VisualAction(**c) if isinstance(c, dict) else c for c in value.candidates]
     if not all(isinstance(c, VisualAction) and not isinstance(c, NavigationVisualTarget) for c in value.candidates):
         raise ValueError('Each alternative takes text and optional context_text; search_bounds is shared')

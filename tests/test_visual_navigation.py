@@ -187,9 +187,10 @@ def test_outer_navigation_does_not_repeat_failed_continuation_recovery(svc, cloc
     assert r.structured_content['input_status']=='sent'
 
 
-def choice_step():
+def choice_step(*, six=False):
+    middle = ['Read','Inspect','View','Browse'] if six else []
     return visual_step(visual_target=None, visual_target_any_of={'candidates':[
-        {'text':'Open','context_text':'Report A'}, {'text':'Preview','context_text':'Report A'}],
+        {'text':word,'context_text':'Report A'} for word in ('Open', *middle, 'Preview')],
         'search_bounds':[0, 30, 100, 198]})
 
 
@@ -228,12 +229,13 @@ def test_choice_evaluates_one_shared_frame_and_confirms_all_competitors(svc, clo
     reads = []
     def counted(png, texts, region):
         reads.append(png)
-        assert set(texts) == {'Open','Preview','Report A'} and region == [0,30,100,198]
+        assert len(texts) == 7 and set(texts) == {'Open','Read','Inspect','View','Browse','Preview','Report A'}
+        assert region == [0,30,100,198]
         if mode == 'dialog': svc.driver.xml = scene(extra=node(**{'class':'android.app.Dialog'}))
         return read(png,texts=texts,region=region)
     svc._vision.read = counted
     # Include an already-sent step. Refusing the tap must not repeat that input.
-    r = invoke(svc.navigate,oid,plan(tap_step(),choice_step()),image='auto')
+    r = invoke(svc.navigate,oid,plan(tap_step(),choice_step(six=True)),image='auto')
     ok = mode in ('unique','motion','busy')
     d = r.structured_content; step = d['navigation']['steps'][-1]
     assert (not r.is_error) == ok, d
@@ -260,13 +262,13 @@ def test_choice_schema_and_all_late_bounds_are_checked_before_input(svc, clock):
         async with Client(create_server(svc)) as client:
             definitions = next(t for t in (await client.list_tools()).tools if t.name=='navigate').input_schema['$defs']
             assert 'visual_target_any_of' in definitions['NavigationStep']['properties']
-            caps = (await client.call_tool('get_status',{})).structured_content['capabilities']
-            assert caps['visual_target_any_of']
+            status = (await client.call_tool('get_status',{})).structured_content
+            assert status['capabilities']['visual_target_any_of'] and status['limits']['visual_target_candidates'] == 6
             base=choice_step()
             for change in ('duplicate','length','region','candidate_region','page','exclusive','swipe'):
                 step=copy.deepcopy(base); choice=step['visual_target_any_of']
                 if change=='duplicate': choice['candidates'][1]['text']=' O pen '
-                if change=='length': choice['candidates']*=2
+                if change=='length': choice['candidates']=[{'text':f'Action {i}'} for i in range(7)]
                 if change=='region': choice['search_bounds'][2]=101
                 if change=='candidate_region': choice['candidates'][0]['search_bounds']=[0,0,30,30]
                 if change=='page': del step['when']
