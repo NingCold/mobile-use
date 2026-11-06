@@ -1,4 +1,6 @@
-# 验证与贡献
+# 开发与验证
+
+MCP 工具入口在 [server.py](src/mobile_use/server.py)，由 [service.py](src/mobile_use/service.py) 管理观察、设备租约和输入。修改导航动作，从 [options.py](src/mobile_use/options.py) 的参数约束和 [navigation.py](src/mobile_use/navigation.py) 的执行逻辑入手；只改给助手的操作说明时，编辑 [Skill](skills/mobile-use/SKILL.md)。具体应用的选择器、页面流程和停留策略应由调用方提供。
 
 在仓库根目录运行。日常改动只跑与改动相关的测试；提交对外发布的候选时跑完整离线套件。它使用测试设备替身，不需要手机，也不能证明真实界面的速度。
 

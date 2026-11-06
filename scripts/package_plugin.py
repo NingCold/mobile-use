@@ -9,9 +9,10 @@ assert manifest["name"] == "mobile-use"
 assert len(manifest["extensions"]["com.openai"]["interface"]["shortDescription"]) <= 30
 json.loads((root / "mcp.json").read_text(encoding="utf-8"))
 destination = root.parent / f"mobile-use-{manifest['version']}.zip"
-files = [root / p for p in ("plugin.json", "mcp.json", "README.md", "VALIDATION.md", "LICENSE", "pyproject.toml", "uv.lock", ".gitignore")]
+files = [root / p for p in ("plugin.json", "mcp.json", "README.md", "VALIDATION.md", "docs/install-for-agents.md",
+                            "LICENSE", "pyproject.toml", "uv.lock", ".gitignore")]
 for folder, pattern in (("src/mobile_use", "*.py"), ("skills/mobile-use", "*.md"),
-                        ("docs", "*.md"), ("scripts", "*.py"), ("tests", "*.py")):
+                        ("scripts", "*.py"), ("tests", "*.py")):
     files.extend(p for p in (root / folder).rglob(pattern) if p.is_file() and not p.is_symlink()
                  and not any(part.startswith(".") or part == "__pycache__" for part in p.relative_to(root).parts))
 with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:

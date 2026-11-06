@@ -4,6 +4,8 @@
 
 ## 接上第一台手机
 
+**让 AI 帮你安装**：把[给 AI 的安装说明](docs/install-for-agents.md)交给助手，说「请按这份说明安装 Mobile Use，用只读调用验证服务」。手动安装按下面操作。
+
 准备好 [uv](https://docs.astral.sh/uv/) 和 [Android Platform Tools](https://developer.android.com/tools/releases/platform-tools)。手机开启 USB 调试并接受电脑的授权；无线设备先用 ADB 配对、连接。终端运行 `adb devices -l`，确认目标设备状态为 `device`。
 
 克隆仓库并安装锁定的依赖：
@@ -40,4 +42,4 @@ codex mcp add mobile-use --env PYTHONIOENCODING=utf-8 -- uv run --directory "$pr
 
 控件解析、OCR 和手势执行在本机完成；工具返回的文字和图片会进入所用 MCP 宿主。默认不把观察截图写入磁盘。仓库安装的审计记录默认在 `artifacts/`，可能包含界面文字、设备标识和操作轨迹；调试脚本还可能主动保存图片。不要把这些文件直接贴到公开 issue。服务可用 `--artifacts` 指定私有记录目录。
 
-[验证与贡献](VALIDATION.md) · [下一步工作](docs/roadmap.md) · [MIT 许可证](LICENSE)
+[开发与验证](VALIDATION.md) · [MIT 许可证](LICENSE)

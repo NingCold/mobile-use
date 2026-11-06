@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 artifacts/
+/TODO.md
 .env
 .env.*
 build/
