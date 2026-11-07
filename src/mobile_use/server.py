@@ -19,7 +19,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from .service import MobileService, Observation
 from . import __version__
 from .options import Focus, WaitCondition, TargetSelector, focus_option, condition, seconds, settle_option
-from .options import TapFollowUp, BackSequence, VisualTarget, VisualTargetAnyOf, NavigationPlan, TapReadiness
+from .options import TapFollowUp, BackSequence, VisualTarget, VisualTargetAnyOf, VisualQueryBatch, NavigationPlan, TapReadiness
 from .delivery import brief_result, page_options
 
 ImagePolicy = Literal["auto", "always", "never"]
@@ -271,7 +271,8 @@ def create_server(service: MobileService):
     def get_observation(observation_id: str, image: ImagePolicy = "auto", detail: Detail = "full",
                         focus: Focus | None = None, limit: int | None = None,
                         cursor: str | None = None, visual_query: VisualTarget | None = None,
-                        visual_query_any_of: VisualTargetAnyOf | None = None) -> CallToolResult:
+                        visual_query_any_of: VisualTargetAnyOf | None = None,
+                        visual_query_batch: VisualQueryBatch | None = None) -> CallToolResult:
         """Expand the latest cached observation/image without device reads, new IDs or clearing stop.
 
         detail=brief returns decision evidence; full also includes the originating call diagnostics.
@@ -286,9 +287,14 @@ def create_server(service: MobileService):
         visual_query_any_of compares a bounded set in one cached frame; every alternative needs
         context_text. Only a unique match receives an ID. Its tap rechecks the entire alternative
         set on fresh pixels. Use one query form, not both. Read the running cached_visual_candidates limit.
+        visual_query_batch evaluates named conditions and optional action candidates on one cached
+        frame. require lists conditions that must match before issuing an action ID and again on
+        fresh tap validation. Conditions alone never issue action IDs. Names have caller-defined
+        meaning; no automatic branch/action or polling. Read limits.visual_conditions.
         """
         return invoke(service.get_observation, observation_id, image=image, detail=detail, focus=focus,
-                      limit=limit, cursor=cursor, visual_query=visual_query, visual_query_any_of=visual_query_any_of)
+                      limit=limit, cursor=cursor, visual_query=visual_query, visual_query_any_of=visual_query_any_of,
+                      visual_query_batch=visual_query_batch)
 
     @server.tool(annotations=action)
     def tap(observation_id: str, element_id: str | None = None,

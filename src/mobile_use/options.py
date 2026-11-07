@@ -1,11 +1,12 @@
 """Bounded, declarative wait and response options. No executable predicates."""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 import math
 import re
 
 MAX_VISUAL_ALTERNATIVES = 6
 MAX_CACHED_VISUAL_ALTERNATIVES = 12
+MAX_VISUAL_CONDITIONS = 8
 
 
 @dataclass
@@ -51,12 +52,70 @@ class VisualTargetAnyOf:
         return [NavigationVisualTarget(c.text, c.context_text, self.search_bounds) for c in self.candidates]
 
 
-def visual_choices_option(value, width, height, *, limit=MAX_VISUAL_ALTERNATIVES, context_required=False):
+@dataclass
+class VisualCondition:
+    """Named read-only label evidence; names have no built-in business meaning."""
+    name: str
+    text: str
+    context_text: str | None = None
+    search_bounds: list[int] | None = None
+    __pydantic_config__ = {'extra': 'forbid'}
+
+    def selector(self, shared_bounds=None):
+        return NavigationVisualTarget(self.text, self.context_text,
+                                      self.search_bounds if self.search_bounds is not None else shared_bounds)
+
+
+@dataclass
+class VisualQueryBatch:
+    """One frame/region, independent conditions and optional guarded action choices."""
+    conditions: list[VisualCondition]
+    candidates: list[VisualAction] = field(default_factory=list)
+    require: list[str] = field(default_factory=list)
+    search_bounds: list[int] | None = None
+    __pydantic_config__ = {'extra': 'forbid'}
+
+
+def visual_batch_option(value, width, height):
+    if isinstance(value, dict):
+        value = VisualQueryBatch(**value)
+    if (not isinstance(value, VisualQueryBatch) or not isinstance(value.conditions, list)
+            or not 1 <= len(value.conditions) <= MAX_VISUAL_CONDITIONS):
+        raise ValueError(f'visual_query_batch requires 1..{MAX_VISUAL_CONDITIONS} conditions')
+    # Validate the shared OCR region even for a read-only batch.
+    navigation_visual_option(NavigationVisualTarget('_', search_bounds=value.search_bounds), width, height)
+    region = value.search_bounds or [0, 0, width, height]
+    value.conditions = [VisualCondition(**c) if isinstance(c, dict) else c for c in value.conditions]
+    names = set()
+    for c in value.conditions:
+        if (not isinstance(c, VisualCondition) or not isinstance(c.name, str)
+                or not c.name.strip() or len(c.name) > 64 or c.name in names):
+            raise ValueError('Conditions need unique nonblank names of at most 64 characters')
+        names.add(c.name)
+        navigation_visual_option(c.selector(value.search_bounds), width, height)
+        b = c.search_bounds or region
+        if not (region[0] <= b[0] < b[2] <= region[2] and region[1] <= b[1] < b[3] <= region[3]):
+            raise ValueError('Condition search_bounds must be inside the shared search_bounds')
+    if (not isinstance(value.require, list) or any(not isinstance(n, str) or n not in names for n in value.require)
+            or len(set(value.require)) != len(value.require)):
+        raise ValueError('require must list distinct declared condition names')
+    if not isinstance(value.candidates, list) or len(value.candidates) > MAX_CACHED_VISUAL_ALTERNATIVES:
+        raise ValueError(f'Batch candidates must be a list of at most {MAX_CACHED_VISUAL_ALTERNATIVES}')
+    if value.require and not value.candidates:
+        raise ValueError('require binds action candidates; omit it for a read-only batch')
+    if value.candidates:
+        choices = VisualTargetAnyOf(value.candidates, value.search_bounds)
+        value.candidates = visual_choices_option(choices, width, height,
+            limit=MAX_CACHED_VISUAL_ALTERNATIVES, minimum=1, context_required=True).candidates
+    return value
+
+
+def visual_choices_option(value, width, height, *, limit=MAX_VISUAL_ALTERNATIVES, minimum=2, context_required=False):
     if isinstance(value, dict):
         value = VisualTargetAnyOf(**value)
     if (not isinstance(value, VisualTargetAnyOf) or not isinstance(value.candidates, list)
-            or not 2 <= len(value.candidates) <= limit):
-        raise ValueError(f'visual alternatives require 2..{limit} exact alternatives')
+            or not minimum <= len(value.candidates) <= limit):
+        raise ValueError(f'visual alternatives require {minimum}..{limit} exact alternatives')
     value.candidates = [VisualAction(**c) if isinstance(c, dict) else c for c in value.candidates]
     if not all(isinstance(c, VisualAction) and not isinstance(c, NavigationVisualTarget) for c in value.candidates):
         raise ValueError('Each alternative takes text and optional context_text; search_bounds is shared')

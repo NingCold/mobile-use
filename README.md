@@ -41,6 +41,8 @@ codex mcp add mobile-use --env PYTHONIOENCODING=utf-8 -- uv run --directory "$pr
 
 已有截图时，可以在 `get_observation.visual_query_any_of` 中一次声明全部已知按钮文案与上下文，从首帧选择唯一入口。同一帧、同一区域会共享OCR检测与已识别文字；点击前仍检查新画面中是否出现竞争按钮或遮挡。参数与结果见[首帧候选比较](skills/mobile-use/references/visual-targets.md#compare-alternatives-on-the-first-returned-frame)。
 
+如果还需要判断页面条件，例如“文档已就绪”时才能打开，使用[同帧多条件查询](skills/mobile-use/references/visual-targets.md#query-conditions-and-actions-together)：一次返回多项条件及按钮候选，将点击前提写入 `require` 后，按钮和前提会在点击前一起复核。条件名称与分支含义由任务流程定义。
+
 ## 数据留在哪里
 
 控件解析、OCR 和手势执行在本机完成；工具返回的文字和图片会进入所用 MCP 宿主。默认不把观察截图写入磁盘。仓库安装的审计记录默认在 `artifacts/`，可能包含界面文字、设备标识和操作轨迹；调试脚本还可能主动保存图片。不要把这些文件直接贴到公开 issue。服务可用 `--artifacts` 指定私有记录目录。

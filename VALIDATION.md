@@ -17,4 +17,6 @@ uv run --frozen --extra test python -m pytest -q
 
 修改OCR缓存或首帧候选时，针对性运行 `python -m pytest -q tests/test_cached_visual_choices.py tests/test_vision.py tests/test_visual_navigation.py`。检查同帧查询是否复用检测、新标签是否增量识别、新帧是否隔离，以及复核帧新增竞争按钮时是否零输入。记录 `vision` 的检测/识别计数，并与设备截图次数分开；不拿合成页面墙钟代替实机入口时间。
 
+同帧条件批量查询另见 `tests/test_visual_batch.py`：验证一次OCR读取、只读条件无动作ID、前提未满足时不发ID，以及按钮不变但复核帧中的前提消失或产生歧义时零输入。批量条件由调用方命名，通用代码与测试不依赖具体应用；条件及候选使用同一截图，但只有 `require` 列出的条件随点击重新校验。
+
 **提交改动**：向 GitHub 提交代码后，在 [Tests](https://github.com/NingCold/mobile-use/actions/workflows/tests.yml) 查看结果。发往 `main` 的推送和拉取请求会检查锁文件、运行离线测试；实机耗时单独在授权设备上验证。

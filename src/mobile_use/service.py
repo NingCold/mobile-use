@@ -19,6 +19,7 @@ from .driver import AndroidDriver
 from .gestures import check_point, swipe_plan, tap_plan
 from . import __version__
 from .options import MAX_VISUAL_ALTERNATIVES, MAX_CACHED_VISUAL_ALTERNATIVES, visual_choices_option, WaitCondition, condition, seconds, focus_option, target_option
+from .options import MAX_VISUAL_CONDITIONS, visual_batch_option
 from .delivery import element_page, brief_observation
 from . import targets
 from .validation import TargetValidation
@@ -94,7 +95,9 @@ class Observation:
     visual_queries: dict = field(default_factory=dict, repr=False)
     visual_candidates: dict = field(default_factory=dict, repr=False)
     visual_choice_sets: dict = field(default_factory=dict, repr=False)
+    visual_condition_sets: dict = field(default_factory=dict, repr=False)
     visual_result: dict = field(default_factory=dict, repr=False)
+    visual_batch_result: dict = field(default_factory=dict, repr=False)
 
     def metadata(self, detail="full", focus=None, *, limit=None, cursor=None) -> dict:
         focus = focus_option(focus)
@@ -154,6 +157,8 @@ class Observation:
             metadata['pagination'] = pagination
         if self.visual_result:
             metadata['visual_candidates'] = self.visual_result
+        if self.visual_batch_result:
+            metadata['visual_batch'] = self.visual_batch_result
         return brief_observation(metadata) if detail == 'brief' else metadata
 
 
@@ -211,6 +216,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                                  "navigation_follow_up": self.validation_mode == 'target',
                                  "visual_candidates": self.validation_mode == 'target',
                                  "cached_visual_alternatives": self.validation_mode == 'target',
+                                 "same_frame_conditions": self.validation_mode == 'target',
                                  "shared_ocr_frames": True,
                                  "rejection_observation": True, "focus": True, "call_timings": True,
                                  "post_input_settle": True,
@@ -231,6 +237,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                            "navigation_steps": 8, "navigation_seconds": 30,
                            "visual_target_candidates": MAX_VISUAL_ALTERNATIVES if self.validation_mode == 'target' else 0,
                            "cached_visual_candidates": MAX_CACHED_VISUAL_ALTERNATIVES if self.validation_mode == 'target' else 0,
+                           "visual_conditions": MAX_VISUAL_CONDITIONS if self.validation_mode == 'target' else 0,
                            "compact_image_max_edge": 1280, "compact_label_characters": 256,
                            "cached_page_elements": 250},
                 "trace_dir": str(self.run_dir)}
@@ -428,7 +435,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                 self.cancel.clear()
             return self._observe()
 
-    def get_observation(self, observation_id, visual_query=None, visual_query_any_of=None):
+    def get_observation(self, observation_id, visual_query=None, visual_query_any_of=None, visual_query_batch=None):
         """Read the latest cached observation without recapturing or clearing stop."""
         with self.lock:
             self._require_device()
@@ -438,13 +445,17 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
             if time.monotonic() - obs.created > self.max_age_seconds:
                 self.observation = None
                 raise MobileError("Observation expired. Call observe again")
-            if visual_query is not None and visual_query_any_of is not None:
-                raise ValueError('Use visual_query OR visual_query_any_of')
-            if visual_query is not None or visual_query_any_of is not None:
+            queries = (visual_query, visual_query_any_of, visual_query_batch)
+            if sum(q is not None for q in queries) > 1:
+                raise ValueError('Use one of visual_query, visual_query_any_of or visual_query_batch')
+            if any(q is not None for q in queries):
                 if self.validation_mode != 'target' or not obs.png:
                     raise ValueError('visual_query requires a cached image in target mode; observe(image="always") if absent')
                 try:
-                    if visual_query_any_of is not None:
+                    if visual_query_batch is not None:
+                        batch = visual_batch_option(visual_query_batch, obs.header['width'], obs.header['height'])
+                        self._query_visual_batch(obs, batch)
+                    elif visual_query_any_of is not None:
                         choices = visual_choices_option(visual_query_any_of, obs.header['width'], obs.header['height'],
                             limit=MAX_CACHED_VISUAL_ALTERNATIVES, context_required=True)
                         self._query_visual_choices(obs, choices)
@@ -632,7 +643,8 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                     region = tuple(visual_bounds)
                 _, relocated = self._validate_target(observation_id, 'visual', region=region,
                                                      context_ids=context_element_ids, visual_target=visual_target,
-                                                     visual_choices=obs.visual_choice_sets.get(visual_candidate_id))
+                                                     visual_choices=obs.visual_choice_sets.get(visual_candidate_id),
+                                                     visual_conditions=obs.visual_condition_sets.get(visual_candidate_id))
                 if relocated is not None:
                     bounds = relocated
             gesture = tap_plan(bounds, self._seed(seed), profile)
