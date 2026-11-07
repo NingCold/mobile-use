@@ -93,10 +93,11 @@ def test_set_budget_context_and_mutual_exclusion_preserve_single_query(visual):
         assert query(s,oid,choices).is_error
     r=invoke(s.get_observation,oid,visual_query=CHOICES['candidates'][0],visual_query_any_of=CHOICES,image='never')
     assert r.is_error
+    group_id=query(s,oid).structured_content['observation']['visual_candidates']['candidates'][0]['id']
     r=invoke(s.get_observation,oid,visual_query=CHOICES['candidates'][0],image='never')
     assert not r.is_error and r.structured_content['observation']['visual_candidates']['candidates'][0]['id']
     single_id=r.structured_content['observation']['visual_candidates']['candidates'][0]['id']
-    group_id=query(s,oid).structured_content['observation']['visual_candidates']['candidates'][0]['id']
+    assert query(s,oid).structured_content['observation']['visual_candidates']['candidates'][0]['id']==group_id
     again=invoke(s.get_observation,oid,visual_query=CHOICES['candidates'][0],image='never')
     assert single_id!=group_id and again.structured_content['observation']['visual_candidates']['candidates'][0]['id']==single_id
 
