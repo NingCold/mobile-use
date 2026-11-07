@@ -268,8 +268,10 @@ class TargetValidation:
                 if not consistent:
                     continue
                 current_header, tree = self._state()
-                if current_header != header or self._read('header') != header:
+                if current_header != header:
                     raise targets.TargetError('foreground_changed', 'Foreground changed after local visual search')
+                # _validate_target closes this tree sample with its final header
+                # read AFTER these pure checks. Do not read the same barrier twice.
                 previous, current = old.tree.graph, tree.graph
                 guards = check_conditions(labels, frame['size'], current)
                 if choices:

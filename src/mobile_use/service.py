@@ -102,13 +102,12 @@ class Observation:
 
     def metadata(self, detail="full", focus=None, *, limit=None, cursor=None) -> dict:
         focus = focus_option(focus)
-        elements, selection, pagination, truncated = element_page(
-            [e.as_dict() for e in self.elements], self.id, focus, limit, cursor)
+        selected, selection, pagination, truncated = element_page(
+            self.elements, self.id, focus, limit, cursor)
+        elements = [e.as_dict() for e in selected]
         compact = detail in ('compact', 'brief')
         if self.validation_mode == 'target' and self.tree and self.tree.graph:
-            by_id = {e.id: e for e in self.elements}
-            for record in elements:
-                element = by_id[record['id']]
+            for element, record in zip(selected, elements):
                 aligned = targets.aligned_labels(self.tree.graph, element.node_index)
                 if aligned:
                     record['aligned_context'] = ([v[:120] for v in aligned[:6]] if compact else list(aligned))

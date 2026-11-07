@@ -1,6 +1,8 @@
 """Target identity and action-scoped guards; XML order is not a universal hit-test."""
 from collections import Counter
 from dataclasses import dataclass, field
+from bisect import bisect_left, bisect_right
+from functools import cached_property
 import re
 from defusedxml.ElementTree import fromstring
 
@@ -19,15 +21,28 @@ class Node:
 
 @dataclass
 class Graph:
+    """One parsed snapshot. Nodes are read-only after build_graph_from_root returns.
+
+    Derived indices belong to this instance, never to a digest or another frame.
+    Public traversal results are copies so callers cannot modify cached ancestry.
+    """
     nodes: list[Node]
     width: int
     height: int
+    _ancestry: dict = field(default_factory=dict, init=False, repr=False, compare=False)
+    _peer_edges: dict = field(default_factory=dict, init=False, repr=False, compare=False)
 
     def ancestors(self, index):
-        result = []
-        while (index := self.nodes[index].parent) is not None:
-            result.append(index)
-        return result
+        if index not in self._ancestry:
+            parent, result = self.nodes[index].parent, []
+            while parent is not None:
+                result.append(parent)
+                if parent in self._ancestry:
+                    result.extend(self._ancestry[parent])
+                    break
+                parent = self.nodes[parent].parent
+            self._ancestry[index] = tuple(result)
+        return list(self._ancestry[index])
 
     def descendants(self, index):
         out = []
@@ -39,6 +54,37 @@ class Graph:
     def root(self, index):
         ancestors = self.ancestors(index)
         return ancestors[-1] if ancestors else index
+
+    @cached_property
+    def container_keys(self):
+        return tuple((identity(n, container=True),
+                      tuple(identity(self.nodes[j], container=True) for j in self.ancestors(i)))
+                     for i, n in enumerate(self.nodes))
+
+    @cached_property
+    def container_index(self):
+        groups = {}
+        for i, n in enumerate(self.nodes):
+            if n.visible:
+                groups.setdefault(self.container_keys[i], []).append(i)
+        return {key: tuple(indices) for key, indices in groups.items()}
+
+    def lateral_peers(self, index):
+        """Passive leaf peers wholly beside the node; exact alignment is checked later."""
+        parent = self.nodes[index].parent
+        if parent not in self._peer_edges:
+            peers = [i for i in self.nodes[parent].children
+                     if not self.nodes[i].children and self.nodes[i].visible and area(self.nodes[i].bounds)
+                     and intersects(self.nodes[i].bounds, (0, 0, self.width, self.height))
+                     and self.nodes[i].attrs.get('clickable') != 'true'
+                     and self.nodes[i].attrs.get('editable') != 'true']
+            self._peer_edges[parent] = (sorted((self.nodes[i].bounds[0], i) for i in peers),
+                                        sorted((self.nodes[i].bounds[2], i) for i in peers))
+        left, right = self._peer_edges[parent]
+        l, _, r, _ = self.nodes[index].bounds
+        # Touching edges qualify. Zero-area peers were excluded above.
+        return [i for _, i in right[:bisect_right(right, (l, len(self.nodes)))]] + [
+            i for _, i in left[bisect_left(left, (r, -1)):]]
 
 def build_graph(xml, width, height):
     return build_graph_from_root(fromstring(xml), width, height)
@@ -142,17 +188,14 @@ def aligned_labels(graph,index):
     n=graph.nodes[index]
     if n.parent is None:
         return ()
-    l,t,r,b=n.bounds
+    _,t,_,b=n.bounds
     if not area(n.bounds):
         return ()
     evidence=set()
-    for i in graph.nodes[n.parent].children:
+    for i in graph.lateral_peers(index):
         peer=graph.nodes[i]
-        a,c,d,e=peer.bounds
-        if (i==index or peer.children or not peer.visible or not area(peer.bounds)
-                or not intersects(peer.bounds,(0,0,graph.width,graph.height))
-                or peer.attrs.get('clickable')=='true' or peer.attrs.get('editable')=='true'
-                or not (d<=l or r<=a)):
+        _,c,_,e=peer.bounds
+        if i==index:
             continue
         if min(b,e)-max(t,c) >= min(b-t,e-c)*.5:
             evidence.update(labels(peer))

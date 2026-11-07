@@ -27,15 +27,20 @@ def page_options(limit, cursor, observation_id, focus):
     return min(limit or 250, focus.max_elements if focus else 250), offset
 
 
+def _value(element, key):
+    return element.get(key, '') if isinstance(element, dict) else getattr(element, key)
+
+
 def element_page(elements, observation_id, focus=None, limit=None, cursor=None):
+    """Select original records/Elements before serialization; never truncate the search."""
     page_limit, offset = page_options(limit, cursor, observation_id, focus)
     matches = []
     for e in elements:
         if focus:
-            if focus.text is not None and not any(focus.text in e.get(k, '') for k in ('text', 'description')):
+            if focus.text is not None and not any(focus.text in _value(e, k) for k in ('text', 'description')):
                 continue
             if focus.bounds is not None:
-                l, t, r, b = e['bounds']
+                l, t, r, b = _value(e, 'bounds')
                 x1, y1, x2, y2 = focus.bounds
                 if not (l < x2 and x1 < r and t < y2 and y1 < b):
                     continue

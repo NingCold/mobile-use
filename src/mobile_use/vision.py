@@ -6,7 +6,7 @@ import unicodedata
 
 from PIL import Image, ImageChops, ImageStat
 
-from .targets import TargetError, area, identity
+from .targets import TargetError, area
 
 
 def normalized(text):
@@ -174,8 +174,7 @@ def unique(labels, text, region, *, reference=False):
 
 
 def container_key(graph, index):
-    return (identity(graph.nodes[index], container=True),
-            tuple(identity(graph.nodes[i], container=True) for i in graph.ancestors(index)))
+    return graph.container_keys[index]
 
 
 @dataclass(frozen=True)
@@ -220,7 +219,7 @@ def bind_reference(labels, spec, bounds, size, graph=None):
             local = intersection(region, n.bounds)
             if inside(target.bounds, local) and any(inside(c.bounds, local) for c in contexts):
                 key = container_key(graph, i)
-                if sum(v.visible and container_key(graph, j) == key for j, v in enumerate(graph.nodes)) == 1:
+                if len(graph.container_index[key]) == 1:
                     candidates.append((area(local), i, local, key))
         if candidates:
             _, _, region, container = min(candidates)
@@ -234,8 +233,7 @@ def bind_reference(labels, spec, bounds, size, graph=None):
 def relocate(labels, spec, reference, size, graph=None):
     region = spec.search_bounds or (0, 0, *size)
     if reference.container is not None:
-        matches = [n for i, n in enumerate(graph.nodes) if n.visible and
-                   container_key(graph, i) == reference.container] if graph is not None else []
+        matches = [graph.nodes[i] for i in graph.container_index.get(reference.container, ())] if graph is not None else []
         if len(matches) != 1:
             raise TargetError('visual_context_changed', 'Bound visual container changed or became ambiguous')
         region = intersection(region, matches[0].bounds)
@@ -255,7 +253,7 @@ def bind_declared(labels, spec, size, graph):
     for i, n in enumerate(graph.nodes):
         if n.visible and (n.children or n.parent is None) and inside(target.bounds, n.bounds):
             key = container_key(graph, i)
-            if sum(v.visible and container_key(graph, j) == key for j, v in enumerate(graph.nodes)) == 1:
+            if len(graph.container_index[key]) == 1:
                 candidates.append((area(n.bounds), key))
     key = min(candidates, key=lambda v:v[0])[1] if candidates else None
     return VisualBinding(target, (), key)
