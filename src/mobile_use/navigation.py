@@ -6,7 +6,7 @@ import time
 from . import targets
 from .gestures import check_point, swipe_plan, tap_plan
 from .options import visual_target_option, navigation_visual_option, visual_choices_option, WaitCondition, TapReadiness
-from .vision import LocalVision, unique, stationary, bind_declared, choose_declared, same_search_pixels, relocate
+from .vision import LocalVision, unique, PixelComparison, bind_declared, choose_declared, relocate
 from .readiness import confirm_target
 
 
@@ -123,10 +123,11 @@ class LocalNavigation:
                     frame = capture()
                     continue
                 checked = capture()
-                stable = all(stationary(frame['png'], checked['png'], v.bounds) for v in (target, *contexts))
-                previous, frame = frame, checked
+                pixels = PixelComparison(frame['png'], checked['png'])
+                stable = all(pixels.stationary(v.bounds) for v in (target, *contexts))
+                frame = checked
                 if choices:
-                    if same_search_pixels(previous['png'], checked['png'], region):
+                    if pixels.same_search_pixels(region):
                         checked['labels'] = labels
                     labels = recognize(checked)
                 current = page_tree()
@@ -213,7 +214,8 @@ class LocalNavigation:
         checked, checked_size = self._read('screenshot')
         if checked_size != size or self._read('header') != header:
             raise MobileError('Display changed during navigation condition')
-        if not all(stationary(png, checked, n.bounds) for n in found):
+        pixels = PixelComparison(png, checked)
+        if not all(pixels.stationary(n.bounds) for n in found):
             raise targets.TargetError('visual_unstable', 'Navigation condition moved during confirmation')
         return {'text': spec.text, 'context_text': spec.context_text,
                 'bounds': [list(n.bounds) for n in found], 'source': 'local_ocr_confirmed'}
@@ -332,6 +334,10 @@ class LocalNavigation:
                         self.driver.execute(gesture)
                     else:
                         self.driver.launch(step.package)
+                except Exception as exc:
+                    self._log('navigation_input_unknown', index=index,
+                              exception=self._exception_details(exc, f'input.{step.kind}'))
+                    raise
                 finally:
                     self._record_time('execution_ms', at)
                 sent_mono = time.monotonic()
@@ -403,6 +409,7 @@ class LocalNavigation:
                 raise MobileError('Final navigation state is inconsistent or outside the destination', partial_observation=obs)
             return {'navigation': result, 'input_status': self._input_phase}, obs
         except Exception as exc:
+            self._log('navigation_interrupted', exception=self._exception_details(exc, 'navigation'))
             if not (follow_up and result.get('status') == 'completed'):
                 result['status'] = 'interrupted'
             obs = getattr(exc, 'partial_observation', None)

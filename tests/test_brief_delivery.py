@@ -11,7 +11,7 @@ import pytest
 
 from mobile_use.server import create_server, invoke, pack
 from test_mobile_use import service
-from test_targets import svc, observe, button, scene
+from test_targets import svc, observe, button, scene, node
 from test_workflows import clock
 
 
@@ -156,6 +156,48 @@ def test_cache_pages_reach_every_element_without_reads_or_renewal(svc):
         cursor = o['pagination']['next_cursor']
     assert cursor is None and ids == [e.id for e in obs.elements]
     assert obs.created == created and obs.capture == capture
+
+
+def paged_action_scene(duplicate=False):
+    padding = ''.join(node('Open' if duplicate and i == 0 else f'Padding {i}',
+                           bounds='[0,0][2,2]') for i in range(250))
+    late = node(rid='late-list', bounds='[0,50][100,150]', scrollable='true', children=
+                node('Item A', rid='late-context', bounds='[0,60][40,80]') +
+                node('Open', rid='late-button', bounds='[50,60][95,90]', clickable='true'))
+    return '<hierarchy>' + node(rid='root', bounds='[0,0][100,200]', children=padding+late) + '</hierarchy>'
+
+
+@pytest.mark.parametrize('mode', ['id', 'selector', 'context', 'container', 'navigation'])
+def test_page_two_elements_are_actionable_with_the_original_snapshot(svc, mode):
+    svc.driver.xml = paged_action_scene()
+    first = invoke(svc.observe, image='never').structured_content['observation']
+    oid = first['observation_id']
+    second = invoke(svc.get_observation, oid, image='never',
+                    cursor=first['pagination']['next_cursor']).structured_content['observation']
+    ids = {e['resource_id']: e['id'] for e in second['elements']}
+    assert ids == {'late-list': 'e251', 'late-context': 'e252', 'late-button': 'e253'}
+    if mode == 'container':
+        result = invoke(svc.swipe, oid, 50, 130, 50, 100, container_id=ids['late-list'], image='never')
+    elif mode == 'navigation':
+        result = invoke(svc.navigate, oid, {'allowed_packages': ['example.calculator'],
+            'steps': [{'kind': 'tap', 'package': 'example.calculator', 'target': {'text': 'Open'}}]}, image='never')
+    else:
+        args = {'target': {'text': 'Open'}} if mode == 'selector' else {'element_id': ids['late-button']}
+        if mode == 'context':
+            args['context_element_ids'] = [ids['late-context']]
+        result = invoke(svc.tap, oid, **args, image='never')
+    assert not result.is_error, result.structured_content
+    assert result.structured_content['input_status'] == 'sent' and len(svc.driver.events) == 1
+    assert invoke(svc.tap, oid, element_id=ids['late-button'], image='never').is_error
+    assert len(svc.driver.events) == 1  # Pagination never extends the old authorization.
+
+
+def test_selector_ambiguity_includes_targets_after_the_first_page(svc):
+    svc.driver.xml = paged_action_scene(duplicate=True)
+    oid = observe(svc)
+    result = invoke(svc.tap, oid, target={'text': 'Open'}, image='never')
+    assert result.is_error and result.structured_content['code'] == 'target_ambiguous'
+    assert not svc.driver.events
 
 
 def test_focus_searches_past_250_before_truncating_labels(svc):

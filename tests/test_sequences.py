@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -123,6 +124,9 @@ def test_second_back_unknown_keeps_first_sent_and_never_replays(svc, local_clock
     assert r.is_error and data['input_status'] == 'unknown'
     assert [s['input_status'] for s in data['continuation']['steps']] == ['sent', 'unknown']
     assert len(svc.driver.events) == 2
+    entries = [json.loads(line) for line in (svc.run_dir/'actions.jsonl').read_text().splitlines()]
+    cause = next(e['exception'] for e in entries if e['event'] == 'sequence_input_unknown')
+    assert cause == {'type': 'TimeoutError', 'stage': 'input.back', 'message': 'unknown'}
 
 
 def test_package_escape_between_backs_stops(svc, local_clock):

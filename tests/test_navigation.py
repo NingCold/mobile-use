@@ -1,5 +1,6 @@
 """Known-path execution: bounded reads, one dispatch per step, useful partial results."""
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -73,12 +74,15 @@ def test_unknown_second_input_is_journaled_once(svc, clock):
     oid = observe(svc)
     def execute(g):
         svc.driver.events.append(g)
-        if len(svc.driver.events) == 2: raise TimeoutError()
+        if len(svc.driver.events) == 2: raise TimeoutError('Gesture acknowledgement timed out')
     svc.driver.execute = execute
     r = invoke(svc.navigate, oid, plan(tap_step(), tap_step()), image='never')
     assert r.is_error and len(svc.driver.events) == 2
     assert r.structured_content['input_status'] == 'unknown'
     assert [s['input_status'] for s in r.structured_content['navigation']['steps']] == ['sent', 'unknown']
+    entries = [json.loads(line) for line in (svc.run_dir/'actions.jsonl').read_text().splitlines()]
+    cause = next(e['exception'] for e in entries if e['event'] == 'navigation_input_unknown')
+    assert cause == {'type': 'TimeoutError', 'stage': 'input.tap', 'message': 'Gesture acknowledgement timed out'}
 
 
 def test_late_invalid_step_rejected_before_launch(svc, clock):

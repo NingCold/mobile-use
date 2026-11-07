@@ -1,13 +1,11 @@
 """Action-specific validation and independently timestamped observations."""
-import io
 import time
 import uuid
 from datetime import datetime, timezone
-from PIL import Image, ImageChops, ImageStat
 
 from . import targets
 from .images import image_evidence
-from .vision import LocalVision, bind_reference, bind_declared, relocate, stationary, normalized, inside, choose_declared, same_search_pixels
+from .vision import LocalVision, bind_reference, bind_declared, relocate, PixelComparison, patch_delta, normalized, inside, choose_declared
 from .options import VisualTarget, VisualTargetAnyOf
 from .readiness import confirm_target
 
@@ -178,12 +176,7 @@ class TargetValidation:
         image_at = datetime.now(timezone.utc).isoformat()
         if size != (header['width'],header['height']) or self._read('header') != header:
             raise MobileError('Display changed during visual validation', stage='preflight', code='display_changed')
-        with Image.open(io.BytesIO(old.png)) as before, Image.open(io.BytesIO(png)) as after:
-            delta = ImageChops.difference(before.convert('RGB').crop(bounds), after.convert('RGB').crop(bounds))
-            mean = max(ImageStat.Stat(delta).mean)
-            channels=delta.split()
-            peak=ImageChops.lighter(ImageChops.lighter(channels[0],channels[1]),channels[2])
-            hot=sum(peak.histogram()[25:]) / (delta.width*delta.height)
+        mean, hot = patch_delta(old.png, png, bounds)
         if mean > 4 or hot > .02:
             # The validation frame already shows why this input is rejected. Reuse
             # it with a fresh tree, only while its foreground/display still agrees.
@@ -264,9 +257,10 @@ class TargetValidation:
                         raise targets.TargetError('foreground_changed', 'Foreground changed during visual search')
                     continue  # A transient absent label can settle locally; never retry input.
                 checked = capture()
-                consistent = all(stationary(frame['png'], checked['png'], item.bounds)
+                pixels = PixelComparison(frame['png'], checked['png'])
+                consistent = all(pixels.stationary(item.bounds)
                                  for item in (target, *contexts, *guards))
-                if choices and not same_search_pixels(frame['png'], checked['png'], spec.search_bounds):
+                if choices and not pixels.same_search_pixels(spec.search_bounds):
                     labels = engine.read(checked['png'], texts=wanted, region=spec.search_bounds)
                 frame = checked
                 if time.monotonic()-search_started > 8:
@@ -291,7 +285,7 @@ class TargetValidation:
                        for n in current.nodes if n.visible):
                     raise targets.TargetError('window_changed', 'A dialog appeared during local visual search')
                 for eid in context_ids or []:
-                    element = next(e for e in old.elements[:250] if e.id == eid)
+                    element = targets.element_by_id(old.elements, eid)
                     targets.resolve(previous, current, element.node_index)
                 self._current_observation(old.id)
                 evidence = {'method': 'local_ocr_context', 'attempts': attempt,
@@ -318,7 +312,7 @@ class TargetValidation:
                               'reference_labels': [{'text': v.text[:200], 'score': round(v.score, 3),
                                                     'bounds': list(v.bounds)} for v in locals().get('reference_labels', [])[:16]]}
                 if self.save_screenshots:
-                    path = self.run_dir / f'{old.id}-visual-reference.png'
+                    path = self._artifact_path(f'{old.id}-visual-reference.png')
                     path.write_bytes(old.png)
                     diagnostic['reference_image'] = str(path)
             raise MobileError(str(exc), stage='preflight', code=exc.code, partial_observation=recovery,
@@ -345,7 +339,7 @@ class TargetValidation:
                 raise MobileError('Display or foreground app changed', stage='preflight', code='foreground_changed')
             previous, current = old.tree.graph, tree.graph
             for eid in context_ids or []:
-                e = next((e for e in old.elements[:250] if e.id == eid), None)
+                e = targets.element_by_id(old.elements, eid)
                 if e is None:
                     raise targets.TargetError('context_missing','Context ID is absent from the inspected observation')
                 targets.resolve(previous,current,e.node_index)
@@ -360,7 +354,7 @@ class TargetValidation:
                     current = tree.graph
                     # Additional facts remain bound through the readiness wait.
                     for eid in context_ids or []:
-                        e = next(e for e in old.elements[:250] if e.id == eid)
+                        e = targets.element_by_id(old.elements, eid)
                         targets.resolve(previous, current, e.node_index)
                     evidence['readiness'] = ready_evidence
                 if kind == 'type':

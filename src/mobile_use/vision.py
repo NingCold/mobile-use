@@ -30,30 +30,52 @@ def center(bounds):
     return ((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2)
 
 
-def patch_delta(before, after, bounds):
-    with Image.open(io.BytesIO(before)) as a, Image.open(io.BytesIO(after)) as b:
-        delta = ImageChops.difference(a.convert('RGB').crop(bounds), b.convert('RGB').crop(bounds))
+class PixelComparison:
+    """One immutable frame pair, decoded at most once per frame for all regions."""
+    def __init__(self, before, after):
+        self.before, self.after = before, after
+        self._images = None
+
+    def _rgb(self):
+        if self._images is None:
+            with Image.open(io.BytesIO(self.before)) as a, Image.open(io.BytesIO(self.after)) as b:
+                self._images = a.convert('RGB'), b.convert('RGB')
+        return self._images
+
+    def patch_delta(self, bounds):
+        a, b = self._rgb()
+        delta = ImageChops.difference(a.crop(bounds), b.crop(bounds))
         mean = max(ImageStat.Stat(delta).mean)
         r, g, b = delta.split()
         peak = ImageChops.lighter(ImageChops.lighter(r, g), b)
         fraction = sum(peak.histogram()[25:]) / (delta.width * delta.height)
-    return mean, fraction
+        return mean, fraction
+
+    def stationary(self, bounds):
+        mean, fraction = self.patch_delta(bounds)
+        return mean <= 4 and fraction <= .02
+
+    def same_search_pixels(self, region):
+        """Exact competition-area equality; never just a fuzzy winner check."""
+        if self.before == self.after:
+            return True
+        left, right = self._rgb()
+        if region:
+            left, right = left.crop(region), right.crop(region)
+        return ImageChops.difference(left, right).getbbox() is None
+
+
+def patch_delta(before, after, bounds):
+    return PixelComparison(before, after).patch_delta(bounds)
 
 
 def stationary(before, after, bounds):
-    mean, fraction = patch_delta(before, after, bounds)
-    return mean <= 4 and fraction <= .02
+    return PixelComparison(before, after).stationary(bounds)
 
 
 def same_search_pixels(before, after, region):
     """Exact equality across the competition area, not a fuzzy check of just the winner."""
-    if before == after:
-        return True
-    with Image.open(io.BytesIO(before)) as a, Image.open(io.BytesIO(after)) as b:
-        left, right = a.convert('RGB'), b.convert('RGB')
-        if region:
-            left, right = left.crop(region), right.crop(region)
-        return ImageChops.difference(left, right).getbbox() is None
+    return PixelComparison(before, after).same_search_pixels(region)
 
 
 class LocalVision:

@@ -15,6 +15,8 @@ uv run --frozen --extra test python -m pytest -q
 
 **报告变慢时**：标明设备连接方式、宿主、计时起止事件和素材是否相同。分列整段墙钟、调用内部耗时、调用间隙、设备截图读取次数和实际交付的图片数。计时从动作发送确认开始，不能把规定的停留时间算成识别开销。分享最小复现时用合成界面或脱敏数据，不上传原始审计文件。
 
+**排查设备异常**：`get_status.trace_dir` 指向本次本地审计目录，首次写入审计或截图时才创建。查看 `actions.jsonl` 中的 `device_read_failed`、`action_unknown`、`sequence_input_unknown` 或 `navigation_input_unknown`：`exception` 包含阶段、类型、有界且经脱敏的原因，以及适用时的 `errno`。工具结果仍以 `input_status` 和已发送步骤为准，不因日志中找到了原因就重放输入。分享前检查脱敏结果，不上传完整请求、输入内容或原始审计。
+
 修改OCR缓存或首帧候选时，针对性运行 `python -m pytest -q tests/test_cached_visual_choices.py tests/test_vision.py tests/test_visual_navigation.py`。检查同帧查询是否复用检测、新标签是否增量识别、新帧是否隔离，以及复核帧新增竞争按钮时是否零输入。记录 `vision` 的检测/识别计数，并与设备截图次数分开；不拿合成页面墙钟代替实机入口时间。
 
 同帧条件批量查询另见 `tests/test_visual_batch.py`：验证一次OCR读取、只读条件无动作ID、前提未满足时不发ID，以及按钮不变但复核帧中的前提消失或产生歧义时零输入。批量条件由调用方命名，通用代码与测试不依赖具体应用；条件及候选使用同一截图，但只有 `require` 列出的条件随点击重新校验。

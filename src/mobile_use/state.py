@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 import json
 import re
 from dataclasses import asdict, dataclass
-from .targets import build_graph
+from .targets import build_graph_from_root
 
 from defusedxml.ElementTree import fromstring
 
@@ -45,7 +45,7 @@ class TreeState:
 
 def inspect_tree(xml: str, width: int, height: int) -> TreeState:
     root = fromstring(xml)
-    graph = build_graph(xml, width, height)
+    graph = build_graph_from_root(root, width, height)
     elements: list[Element] = []
     fingerprint = []
     nodes = []
@@ -115,6 +115,15 @@ def tree_diff(before: TreeState, after: TreeState) -> dict:
     Field values (including text and descriptions) never enter the result.
     """
     old_nodes, new_nodes = before.nodes, after.nodes
+    if old_nodes == new_nodes:
+        # Repeated identical nodes make SequenceMatcher quadratic even when
+        # nothing changed. Preserve the complete diagnostic result on this path.
+        return {"comparison": "aligned_nodes_diagnostic_only",
+                "before_nodes": len(old_nodes), "after_nodes": len(new_nodes),
+                "changed_nodes": 0, "matched_changed_nodes": 0,
+                "added_nodes": 0, "removed_nodes": 0,
+                "changes": [], "changes_truncated": False,
+                "added": [], "removed": [], "unmatched_may_include_replacements": False}
     matcher = SequenceMatcher(None, [tuple(n.items()) for n in old_nodes],
                               [tuple(n.items()) for n in new_nodes], autojunk=False)
     pairs = []

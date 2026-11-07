@@ -57,6 +57,10 @@ class LocalSequences:
             self._log('sequence_input_start', index=len(steps), kind='back')
             try:
                 self.driver.key('back')
+            except Exception as exc:
+                self._log('sequence_input_unknown', index=len(steps),
+                          exception=self._exception_details(exc, 'input.back'))
+                raise
             finally:
                 self._record_time('execution_ms', at)
             self._input_phase = 'sent'
@@ -183,7 +187,8 @@ class LocalSequences:
                 except Exception:
                     pass
             self.observation = obs
-            self._log('sequence_interrupted', **result)
+            self._log('sequence_interrupted', **result,
+                      exception=self._exception_details(exc, 'continuation'))
             reason = str(exc) if isinstance(exc, MobileError) else type(exc).__name__
             raise MobileError(f'Continuation stopped: {reason}. Inspect completed steps; do not replay',
                               partial_observation=obs, continuation=result) from None

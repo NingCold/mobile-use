@@ -16,6 +16,7 @@ from pathlib import Path
 from filelock import FileLock, Timeout
 
 from .driver import AndroidDriver
+from .diagnostics import exception_summary
 from .gestures import check_point, swipe_plan, tap_plan
 from . import __version__
 from .options import MAX_VISUAL_ALTERNATIVES, MAX_CACHED_VISUAL_ALTERNATIVES, visual_choices_option, WaitCondition, condition, seconds, focus_option, target_option
@@ -188,13 +189,30 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
         self._after_input_wait = None
         self._after_input_settle_ms = 0
         self.run_dir = artifact_dir / datetime.now().strftime("%Y%m%d-%H%M%S") / uuid.uuid4().hex[:8]
-        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self._run_dir_ready = False
+
+    def _artifact_path(self, name):
+        if not self._run_dir_ready:
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            self._run_dir_ready = True
+        return self.run_dir / name
+
+    def _exception_details(self, exc, stage, sensitive_values=()):
+        values = list(sensitive_values)
+        obs = self._last_observation
+        if obs and obs.tree and obs.tree.graph:
+            for node in obs.tree.graph.nodes:
+                a = node.attrs
+                if (a.get('password') == 'true' or a.get('editable') == 'true' or
+                        'EditText' in a.get('class', '')):
+                    values.extend(a.get(k, '') for k in ('text', 'content-desc'))
+        return exception_summary(exc, stage, values)
 
     def _log(self, event: str, **values):
         data = {"time": datetime.now(timezone.utc).isoformat(), "event": event,
                 "device": self.driver.serial if self.driver else None,
                 "request_id": self._input_id, **values}
-        with (self.run_dir / "actions.jsonl").open("a", encoding="utf-8") as f:
+        with self._artifact_path("actions.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
     def list_devices(self):
@@ -271,7 +289,8 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
     def disconnect(self):
         self.cancel.set()
         with self.lock:
-            self._log("disconnect")
+            if self.driver is not None or self._run_dir_ready:
+                self._log("disconnect")
             self.observation = None
             self._last_observation = None
             self.driver = None
@@ -293,7 +312,11 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
     def _read(self, method):
         if self._reads is not None:
             self._reads[method] = self._reads.get(method, 0) + 1
-        return getattr(self.driver, method)()
+        try:
+            return getattr(self.driver, method)()
+        except Exception as exc:
+            self._log('device_read_failed', exception=self._exception_details(exc, f'read.{method}'))
+            raise
 
     def _state(self):
         self._require_device()
@@ -371,7 +394,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
         obs.image_reasons = reasons
         self.observation = self._last_observation = obs
         if self.save_screenshots and obs.png:
-            (self.run_dir / f"{obs.id}.png").write_bytes(obs.png)
+            self._artifact_path(f"{obs.id}.png").write_bytes(obs.png)
         self._log("observe", observation_id=obs.id, package=obs.header["package"], stable=obs.stable,
                   actionable=obs.actionable, consistency=obs.consistency, summary=obs.summary,
                   capture=obs.capture, image_reasons=reasons,
@@ -508,7 +531,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                 raise MobileError("UI changed. Call observe before any input", stage="preflight", difference=difference)
         return old
 
-    def _act(self, old: Observation, action: dict, fn, follow_up=None):
+    def _act(self, old: Observation, action: dict, fn, follow_up=None, *, sensitive_values=()):
         # Invalidate before sending; never automatically replay possibly successful input.
         self.observation = None
         if self.cancel.is_set():
@@ -519,7 +542,8 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
         try:
             fn()
         except Exception as exc:
-            self._log("action_unknown", error_type=type(exc).__name__)
+            self._log("action_unknown", error_type=type(exc).__name__,
+                      exception=self._exception_details(exc, f"input.{action['kind']}", sensitive_values))
             raise MobileError(f"Action outcome unknown ({type(exc).__name__}). Reobserve; do not automatically repeat") from None
         finally:
             self._record_time("execution_ms", start)
@@ -617,7 +641,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
             if element_id is not None:
                 if x is not None or y is not None:
                     raise MobileError("Choose element_id OR screenshot coordinates")
-                element = next((e for e in obs.elements[:250] if e.id == element_id), None)
+                element = targets.element_by_id(obs.elements, element_id)
                 if not element or not element.enabled:
                     raise MobileError("Element is absent or disabled")
                 bounds = element.bounds
@@ -669,8 +693,8 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
             else:
                 container=None
                 if container_id is not None:
-                    container=next((e for e in obs.elements[:250] if e.id==container_id and e.scrollable),None)
-                    if container is None:
+                    container=targets.element_by_id(obs.elements, container_id)
+                    if container is None or not container.scrollable:
                         raise ValueError('container_id must identify an observed scrollable element')
                 region=(min(p[0] for p in gesture.points),min(p[1] for p in gesture.points),
                         max(p[0] for p in gesture.points)+1,max(p[1] for p in gesture.points)+1)
@@ -699,7 +723,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
             value = focused[0].text + text if mode == "append" else text
             action = {"kind": "type_text", "mode": mode, "characters": len(text),
                       "mechanism": "accessibility setText; not physical keyboard typing"}
-            return self._act(obs, action, lambda: self.driver.set_text(value))
+            return self._act(obs, action, lambda: self.driver.set_text(value), sensitive_values=(text, value))
 
     @audited_input
     def press_key(self, observation_id, key, back_sequence=None):

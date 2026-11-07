@@ -53,15 +53,21 @@ def tap(service, oid, **kwargs):
                   visual_target={'text': 'Open', 'context_text': 'Report A'}, image='never', **kwargs)
 
 
-def test_local_relocation_clicks_new_target_once_without_intermediate_observation(visual):
+def test_local_relocation_clicks_new_target_once_without_intermediate_observation(visual, monkeypatch):
     service, oid, change = visual
     change()
+    opened, original = [], Image.open
+    def counted(*args, **kwargs):
+        opened.append(1)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(Image, 'open', counted)
     result = tap(service, oid)
     assert not result.is_error, result.structured_content
     data = result.structured_content
     assert data['validation']['status'] == 'relocated'
     assert data['reads']['screenshot'] == 2  # recognition frame and fresh confirmation
     assert len(service.driver.events) == 1
+    assert len(opened) == 2  # Target and context share the same decoded frame pair.
     x, y = service.driver.events[0].points[0]
     assert 30 <= x < 71 and 120 <= y < 136
 

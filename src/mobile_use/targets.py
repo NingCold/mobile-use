@@ -41,6 +41,10 @@ class Graph:
         return ancestors[-1] if ancestors else index
 
 def build_graph(xml, width, height):
+    return build_graph_from_root(fromstring(xml), width, height)
+
+def build_graph_from_root(root, width, height):
+    """Build the graph from an already parsed XML root without parsing it again."""
     nodes = []
     def visit(el, parent=None, visible=True):
         if el.tag != 'node':
@@ -57,7 +61,7 @@ def build_graph(xml, width, height):
             nodes[parent].children.append(index)
         for child in el:
             visit(child, index, visible)
-    visit(fromstring(xml))
+    visit(root)
     return Graph(nodes, width, height)
 
 def identity(node, *, container=False):
@@ -278,9 +282,13 @@ def check_scroll(old,current,region,container_index=None):
         raise TargetError('scroll_obscured','A layer covering the scroll container changed')
     return 'scroll_container_geometry_and_windows'
 
+def element_by_id(elements, element_id):
+    """Resolve within the complete snapshot; delivery pagination is not a filter."""
+    return next((e for e in elements if e.id == element_id), None)
+
 def select_observed(elements,graph,selector):
     found=[]
-    for e in elements[:250]:
+    for e in elements:
         if any(getattr(selector,k) is not None and getattr(e,k)!=getattr(selector,k)
                for k in ('text','description','resource_id')):
             continue
