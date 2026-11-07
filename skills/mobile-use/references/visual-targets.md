@@ -16,4 +16,26 @@ visual_target can combine with an already authorized tap.follow_up. Relocation h
 
 After inspecting an image, get_observation(observation_id,visual_query={text,context_text,search_bounds?},image="never",detail="brief") performs OCR on that cached image only. It returns visual_candidates with bounds, confidence, context and eligible IDs. No device reads, new observation or age renewal occur. Select an inspected candidate with tap(observation_id,visual_candidate_id=...). Do not also pass coordinates, visual_target or another selector. The tap still re-resolves against fresh pixels/tree; cached OCR is reused only for its reference binding. IDs expire with their observation. Ambiguous/low-confidence/context-missing candidates have rejection evidence, not actionable IDs. An OCR label is not proof of clickability or task authorization.
 
+### Compare alternatives on the first returned frame
+
+With `cached_visual_alternatives`, use `get_observation(visual_query_any_of=...)` instead of first trying an incomplete navigation list and then querying missing alternatives separately. Declare the complete authorized set in one shared region, with distinct `text` and identifying `context_text` for every candidate. Read `limits.cached_visual_candidates`; it is separate from the navigation limit. Never truncate the set or split it into input attempts.
+
+```json
+{
+  "observation_id": "CURRENT_ID",
+  "visual_query_any_of": {
+    "candidates": [
+      {"text": "Open", "context_text": "Report A"},
+      {"text": "Preview", "context_text": "Report A"}
+    ]
+  },
+  "detail": "brief",
+  "image": "never"
+}
+```
+
+`observation.visual_candidates.status="matched"` returns one candidate ID. `unresolved` returns the reason and relevant matches without IDs: missing context, duplicate targets and competing alternatives remain decision points. A tap using the returned ID confirms **all declared alternatives** on fresh pixels as well as the selected target/container; a newly appearing competitor blocks input. Single-query IDs retain their original single-target contract.
+
+With `shared_ocr_frames`, queries on the same cached image object and exact region share detection and decoded lines; new label requests decode only previously unexamined compatible lines. Different frames/regions are separate, the cache is bounded, and disconnect clears it. This does not extend observation age or authorize reuse of old coordinates. `vision.detections`, `recognitions`, `frame_hits` and `line_hits` report per-call work; recognition counts are text-line inferences, not screenshots. Reusing a screenshot does not imply zero OCR work.
+
 For already-known future pages, use navigate's visual_target instead; there is no need for a candidate-query round trip or model-provided rectangle. See [known visual actions](navigation.md#known-visual-actions-and-immediate-follow-up). Reference-image binding errors include sampled OCR labels/bounds; with the existing save_screenshots opt-in they also persist the reference image. Visual navigation errors include the sampled label timestamp and, for layout failures, window evidence. These diagnostics do not authorize replay.

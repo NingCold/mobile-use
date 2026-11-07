@@ -15,4 +15,6 @@ uv run --frozen --extra test python -m pytest -q
 
 **报告变慢时**：标明设备连接方式、宿主、计时起止事件和素材是否相同。分列整段墙钟、调用内部耗时、调用间隙、设备截图读取次数和实际交付的图片数。计时从动作发送确认开始，不能把规定的停留时间算成识别开销。分享最小复现时用合成界面或脱敏数据，不上传原始审计文件。
 
+修改OCR缓存或首帧候选时，针对性运行 `python -m pytest -q tests/test_cached_visual_choices.py tests/test_vision.py tests/test_visual_navigation.py`。检查同帧查询是否复用检测、新标签是否增量识别、新帧是否隔离，以及复核帧新增竞争按钮时是否零输入。记录 `vision` 的检测/识别计数，并与设备截图次数分开；不拿合成页面墙钟代替实机入口时间。
+
 **提交改动**：向 GitHub 提交代码后，在 [Tests](https://github.com/NingCold/mobile-use/actions/workflows/tests.yml) 查看结果。发往 `main` 的推送和拉取请求会检查锁文件、运行离线测试；实机耗时单独在授权设备上验证。

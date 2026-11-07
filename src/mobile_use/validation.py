@@ -7,11 +7,42 @@ from PIL import Image, ImageChops, ImageStat
 
 from . import targets
 from .images import image_evidence
-from .vision import LocalVision, bind_reference, relocate, stationary, normalized, inside
+from .vision import LocalVision, bind_reference, relocate, stationary, normalized, inside, choose_declared, same_search_pixels
+from .options import VisualTarget
 from .readiness import confirm_target
 
 
 class TargetValidation:
+    def _query_visual_choices(self, obs, choices):
+        from dataclasses import asdict
+        specs = [VisualTarget(s.text, s.context_text, s.search_bounds) for s in choices.selectors()]
+        if self._vision is None:
+            self._vision = LocalVision()
+        wanted = tuple(dict.fromkeys(v for s in specs for v in (s.text, s.context_text)))
+        labels = self._vision.read(obs.png, texts=wanted, region=choices.search_bounds)
+        for spec in specs:
+            obs.visual_queries[(spec.text, spec.context_text, tuple(spec.search_bounds or ()))] = labels
+        result = {'query_any_of': asdict(choices), 'candidates': [], 'truncated': False,
+                  'source': 'cached_image_ocr', 'scope': 'all declared alternatives; fresh confirmation required'}
+        try:
+            spec, binding = choose_declared(labels, specs, (obs.header['width'], obs.header['height']), obs.tree.graph)
+            value = (spec, binding.target.bounds)
+            cid = next((k for k, v in obs.visual_candidates.items()
+                        if v == value and obs.visual_choice_sets.get(k) == specs), None)
+            if cid is None:
+                cid = 'v' + uuid.uuid4().hex[:12]
+                obs.visual_candidates[cid] = value
+                obs.visual_choice_sets[cid] = specs
+            result.update(status='matched', candidates=[{'id': cid, 'text': spec.text,
+                'bounds': list(binding.target.bounds), 'confidence': round(binding.target.score, 3),
+                'context_text': spec.context_text, 'context_bounds': [list(c.bounds) for c in binding.contexts]}])
+        except targets.TargetError as exc:
+            matches = [v for v in labels if any(normalized(v.text) == normalized(s.text) for s in specs)]
+            result.update(status='unresolved', code=exc.code,
+                candidates=[{'text': v.text, 'bounds': list(v.bounds), 'confidence': round(v.score, 3),
+                             'rejection': exc.code} for v in matches[:16]], truncated=len(matches)>16)
+        obs.visual_result = result
+
     def _cached_visual_labels(self, obs, spec):
         key = (spec.text, spec.context_text, tuple(spec.search_bounds or ()))
         if key not in obs.visual_queries:
@@ -32,7 +63,8 @@ class TargetValidation:
             try:
                 binding = bind_reference(labels, spec, label.bounds, (obs.header['width'], obs.header['height']), obs.tree.graph)
                 value = (spec, label.bounds)
-                candidate_id = next((key for key, item in obs.visual_candidates.items() if item == value), None)
+                candidate_id = next((key for key, item in obs.visual_candidates.items()
+                                     if item == value and key not in obs.visual_choice_sets), None)
                 if candidate_id is None:
                     candidate_id = 'v' + uuid.uuid4().hex[:12]
                     obs.visual_candidates[candidate_id] = value
@@ -125,7 +157,7 @@ class TargetValidation:
                                       'changed_fraction':round(hot,4)})
         return {'region':list(bounds), 'mean_channel_delta':round(mean,2), 'changed_fraction':round(hot,4)}
 
-    def _relocate_visual(self, old, header, region, spec, context_ids, tree):
+    def _relocate_visual(self, old, header, region, spec, context_ids, tree, choices=None):
         """Resolve once locally; at most two read-only attempts, never retry input."""
         from .service import MobileError
         engine = self._vision
@@ -137,7 +169,7 @@ class TargetValidation:
         started = time.monotonic()
         frame = None
         try:
-            wanted = (spec.text, spec.context_text)
+            wanted = tuple(dict.fromkeys(v for s in (choices or [spec]) for v in (s.text, s.context_text)))
             reference_labels = self._cached_visual_labels(old, spec)
             reference = bind_reference(reference_labels, spec, region,
                                        (header['width'], header['height']), old.tree.graph)
@@ -156,6 +188,10 @@ class TargetValidation:
             for attempt in range(1, 3):
                 labels = engine.read(frame['png'], texts=wanted, region=spec.search_bounds)
                 try:
+                    if choices:
+                        winner, _ = choose_declared(labels, choices, frame['size'], tree.graph)
+                        if winner != spec:
+                            raise targets.TargetError('visual_context_changed', 'The matched alternative changed')
                     target, contexts = relocate(labels, spec, reference, frame['size'], tree.graph)
                 except targets.TargetError as exc:
                     if exc.code != 'visual_target_missing' or attempt == 2:
@@ -168,6 +204,8 @@ class TargetValidation:
                 checked = capture()
                 consistent = all(stationary(frame['png'], checked['png'], item.bounds)
                                  for item in (target, *contexts))
+                if choices and not same_search_pixels(frame['png'], checked['png'], spec.search_bounds):
+                    labels = engine.read(checked['png'], texts=wanted, region=spec.search_bounds)
                 frame = checked
                 if time.monotonic()-search_started > 8:
                     raise targets.TargetError('visual_search_timeout', 'Local visual search exceeded eight seconds')
@@ -177,6 +215,10 @@ class TargetValidation:
                 if current_header != header or self._read('header') != header:
                     raise targets.TargetError('foreground_changed', 'Foreground changed after local visual search')
                 previous, current = old.tree.graph, tree.graph
+                if choices:
+                    winner, _ = choose_declared(labels, choices, frame['size'], current)
+                    if winner != spec:
+                        raise targets.TargetError('visual_context_changed', 'The matched alternative changed during confirmation')
                 target, contexts = relocate(labels, spec, reference, frame['size'], current)
                 targets.check_layout(previous, current, reference.regions,
                                      [target.bounds, *(c.bounds for c in contexts)])
@@ -189,6 +231,8 @@ class TargetValidation:
                     targets.resolve(previous, current, element.node_index)
                 self._current_observation(old.id)
                 evidence = {'method': 'local_ocr_context', 'attempts': attempt,
+                            'candidate_count': len(choices) if choices else 1,
+                            'reference_age_ms': round((time.monotonic()-old.created)*1000),
                             'text': spec.text, 'context_text': spec.context_text,
                             'previous_bounds': list(reference.target.bounds), 'resolved_bounds': list(target.bounds),
                             'context_bounds': [list(c.bounds) for c in contexts], 'confidence': round(target.score, 3),
@@ -218,7 +262,7 @@ class TargetValidation:
             self._record_time('visual_local_ms', started)
 
     def _validate_target(self, observation_id, kind, element=None, region=None, context_ids=None, container_index=None,
-                         visual_target=None, readiness=None):
+                         visual_target=None, readiness=None, visual_choices=None):
         from .service import MobileError
         started = time.monotonic()
         self._validation_result = None
@@ -265,7 +309,7 @@ class TargetValidation:
             else:
                 regions = [region] if region is not None else None
                 if visual_target is not None:
-                    bounds, visual = self._relocate_visual(old, header, region, visual_target, context_ids, tree)
+                    bounds, visual = self._relocate_visual(old, header, region, visual_target, context_ids, tree, visual_choices)
                     evidence.update(scope='window_and_visual_text_context', visual=visual,
                                     status='relocated' if visual['previous_bounds'] != list(bounds) else 'ready',
                                     previous_bounds=visual['previous_bounds'], resolved_bounds=list(bounds))

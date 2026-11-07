@@ -19,7 +19,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from .service import MobileService, Observation
 from . import __version__
 from .options import Focus, WaitCondition, TargetSelector, focus_option, condition, seconds, settle_option
-from .options import TapFollowUp, BackSequence, VisualTarget, NavigationPlan, TapReadiness
+from .options import TapFollowUp, BackSequence, VisualTarget, VisualTargetAnyOf, NavigationPlan, TapReadiness
 from .delivery import brief_result, page_options
 
 ImagePolicy = Literal["auto", "always", "never"]
@@ -114,6 +114,7 @@ def invoke(fn, *args, image="auto", detail="compact", focus=None, until=None, ti
             service._metrics = {}
             service._reads = {}
             previous_capture, previous_hint = service._image_policy, service._image_hint
+            vision_before = dict(getattr(service._vision, 'stats', {}))
         obs, failed = None, False
         prepared_metadata = None
         valid_output = False
@@ -196,6 +197,10 @@ def invoke(fn, *args, image="auto", detail="compact", focus=None, until=None, ti
             limit, cursor = None, None
         if service:
             data['call_id'] = call_id
+            vision_after = getattr(service._vision, 'stats', {})
+            vision_delta = {k: v - vision_before.get(k, 0) for k, v in vision_after.items()}
+            if any(vision_delta.values()):
+                data['vision'] = vision_delta
             data['reads'] = dict(service._reads)
             data['timings'] = {k: round(v) for k, v in service._metrics.items()}
             data['timings'].update(service_ms=round((time.monotonic() - started) * 1000),
@@ -265,7 +270,8 @@ def create_server(service: MobileService):
     @server.tool(annotations=read)
     def get_observation(observation_id: str, image: ImagePolicy = "auto", detail: Detail = "full",
                         focus: Focus | None = None, limit: int | None = None,
-                        cursor: str | None = None, visual_query: VisualTarget | None = None) -> CallToolResult:
+                        cursor: str | None = None, visual_query: VisualTarget | None = None,
+                        visual_query_any_of: VisualTargetAnyOf | None = None) -> CallToolResult:
         """Expand the latest cached observation/image without device reads, new IDs or clearing stop.
 
         detail=brief returns decision evidence; full also includes the originating call diagnostics.
@@ -277,9 +283,12 @@ def create_server(service: MobileService):
         inputs still validate current device state. Stale IDs require observe instead.
         visual_query performs local OCR on the cached image only, returning observation-bound
         visual candidate IDs for inspected exact labels/context. It does not prove clickability.
+        visual_query_any_of compares a bounded set in one cached frame; every alternative needs
+        context_text. Only a unique match receives an ID. Its tap rechecks the entire alternative
+        set on fresh pixels. Use one query form, not both. Read the running cached_visual_candidates limit.
         """
         return invoke(service.get_observation, observation_id, image=image, detail=detail, focus=focus,
-                      limit=limit, cursor=cursor, visual_query=visual_query)
+                      limit=limit, cursor=cursor, visual_query=visual_query, visual_query_any_of=visual_query_any_of)
 
     @server.tool(annotations=action)
     def tap(observation_id: str, element_id: str | None = None,

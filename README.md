@@ -39,6 +39,8 @@ codex mcp add mobile-use --env PYTHONIOENCODING=utf-8 -- uv run --directory "$pr
 - **同一动作有几种按钮文案**：如果已知文档页可能写着“打开”或“预览”，而两者都是本次允许的操作，可声明[一组精确候选](skills/mobile-use/references/navigation.md#when-a-known-page-has-alternate-button-labels)。服务在同一画面找全部候选；只有唯一匹配且复核通过才点击。两者同时出现时交回判断。
 - **异常或中断**：先看动作是否已经发送。已发送或结果未知时，核对当前状态，不要重放整段。需要更多文字时，先用 `get_observation` 展开最近一次的缓存；它不刷新屏幕，也不会延长观察有效期。
 
+已有截图时，可以在 `get_observation.visual_query_any_of` 中一次声明全部已知按钮文案与上下文，从首帧选择唯一入口。同一帧、同一区域会共享OCR检测与已识别文字；点击前仍检查新画面中是否出现竞争按钮或遮挡。参数与结果见[首帧候选比较](skills/mobile-use/references/visual-targets.md#compare-alternatives-on-the-first-returned-frame)。
+
 ## 数据留在哪里
 
 控件解析、OCR 和手势执行在本机完成；工具返回的文字和图片会进入所用 MCP 宿主。默认不把观察截图写入磁盘。仓库安装的审计记录默认在 `artifacts/`，可能包含界面文字、设备标识和操作轨迹；调试脚本还可能主动保存图片。不要把这些文件直接贴到公开 issue。服务可用 `--artifacts` 指定私有记录目录。

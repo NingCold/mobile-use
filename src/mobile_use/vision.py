@@ -60,6 +60,11 @@ class LocalVision:
     """One lazy CPU engine per service. Models are wheel-local; no network fallback."""
     def __init__(self):
         self.engine = None
+        self._frames = []
+        self.stats = dict(detections=0, recognitions=0, frame_hits=0, line_hits=0)
+
+    def clear_cache(self):
+        self._frames.clear()
 
     def read(self, png, texts=(), region=None):
         import numpy as np
@@ -77,21 +82,32 @@ class LocalVision:
                 'EngineConfig.onnxruntime.intra_op_num_threads': 4,
                 'EngineConfig.onnxruntime.inter_op_num_threads': 1,
                 **{f'{k}.model_path': str(v) for k, v in paths.items()}})
-        with Image.open(io.BytesIO(png)) as image:
-            offset = (region[0], region[1]) if region is not None else (0, 0)
-            if region is not None:
-                image = image.crop(region)
-            w, h = image.size
-            # ndarray input uses BGR; PIL input conversion varies across OCR releases.
-            pixels = np.asarray(image.convert('RGB'))[:, :, ::-1].copy()
-            result = self.engine(pixels, use_det=True, use_cls=False, use_rec=not texts)
+        scope = tuple(region) if region is not None else None
+        # Cache by the actual immutable frame object and region, never by a
+        # screen-wide similarity/fingerprint. Fresh samples remain fresh samples.
+        cached = next((f for f in self._frames if f['png'] is png and f['region'] == scope), None)
+        if cached is None:
+            with Image.open(io.BytesIO(png)) as image:
+                if region is not None:
+                    image = image.crop(region)
+                pixels = np.asarray(image.convert('RGB'))[:, :, ::-1].copy()
+            self.stats['detections'] += 1
+            result = self.engine(pixels, use_det=True, use_cls=False, use_rec=False)
+            cached = dict(png=png, region=scope, pixels=pixels, boxes=result.boxes, lines={})
+            self._frames.append(cached)
+            self._frames = self._frames[-4:]
+        else:
+            self.stats['frame_hits'] += 1
+        offset = (region[0], region[1]) if region is not None else (0, 0)
+        pixels = cached['pixels']
+        h, w = pixels.shape[:2]
         labels = []
         decoded = 0
-        if result.boxes is None:
+        if cached['boxes'] is None:
             return labels
         lengths = {sum(1 if unicodedata.east_asian_width(c) in ('W', 'F') else .55
                        for c in normalized(text)) for text in texts}
-        for index, box in enumerate(result.boxes):
+        for index, box in enumerate(cached['boxes']):
             l, t = np.floor(box.min(axis=0)).astype(int)
             r, b = np.ceil(box.max(axis=0)).astype(int)
             bounds = (max(0, int(l)), max(0, int(t)), min(w, int(r)), min(h, int(b)))
@@ -108,13 +124,16 @@ class LocalVision:
                 if decoded >= 64:
                     raise TargetError('visual_search_limit', 'Too many visual text candidates; narrow search_bounds')
                 decoded += 1
+            if index not in cached['lines']:
                 crop = pixels[bounds[1]:bounds[3], bounds[0]:bounds[2]].copy()
+                self.stats['recognitions'] += 1
                 rec = self.engine(crop, use_det=False, use_cls=False, use_rec=True)
-                if not rec.txts:
-                    continue
-                text, score = rec.txts[0], rec.scores[0]
+                cached['lines'][index] = (rec.txts[0], rec.scores[0]) if rec.txts else None
             else:
-                text, score = result.txts[index], result.scores[index]
+                self.stats['line_hits'] += 1
+            if cached['lines'][index] is None:
+                continue
+            text, score = cached['lines'][index]
             labels.append(Label(str(text), float(score),
                                 tuple(v + offset[i % 2] for i, v in enumerate(bounds))))
         return labels

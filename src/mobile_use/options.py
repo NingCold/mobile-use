@@ -5,6 +5,7 @@ import math
 import re
 
 MAX_VISUAL_ALTERNATIVES = 6
+MAX_CACHED_VISUAL_ALTERNATIVES = 12
 
 
 @dataclass
@@ -50,18 +51,20 @@ class VisualTargetAnyOf:
         return [NavigationVisualTarget(c.text, c.context_text, self.search_bounds) for c in self.candidates]
 
 
-def visual_choices_option(value, width, height):
+def visual_choices_option(value, width, height, *, limit=MAX_VISUAL_ALTERNATIVES, context_required=False):
     if isinstance(value, dict):
         value = VisualTargetAnyOf(**value)
     if (not isinstance(value, VisualTargetAnyOf) or not isinstance(value.candidates, list)
-            or not 2 <= len(value.candidates) <= MAX_VISUAL_ALTERNATIVES):
-        raise ValueError(f'visual_target_any_of requires 2..{MAX_VISUAL_ALTERNATIVES} exact alternatives')
+            or not 2 <= len(value.candidates) <= limit):
+        raise ValueError(f'visual alternatives require 2..{limit} exact alternatives')
     value.candidates = [VisualAction(**c) if isinstance(c, dict) else c for c in value.candidates]
     if not all(isinstance(c, VisualAction) and not isinstance(c, NavigationVisualTarget) for c in value.candidates):
         raise ValueError('Each alternative takes text and optional context_text; search_bounds is shared')
     seen = set()
     for spec in value.selectors():
         navigation_visual_option(spec, width, height)
+        if context_required and spec.context_text is None:
+            raise ValueError('Cached visual alternatives require context_text for every candidate')
         seen.add(''.join(spec.text.split()))
     if len(seen) != len(value.candidates):
         raise ValueError('Use distinct action labels; visual alternatives share one search region')

@@ -17,6 +17,8 @@ With tree_first_images in target mode, prefer image=auto for ordinary steps; wit
 
 With local_visual_regions, a few small unlabelled native icons no longer force repeated screenshots of readable pages. image.visual_regions lists unresolved original-pixel rectangles; inspect an image before interpreting or acting on those icons. These regions describe missing semantics, not unchanged pixels. New regions, sparse/drawn pages and visual actions still request images automatically.
 
+With cached_visual_alternatives, compare the complete known action set on the first returned image using get_observation.visual_query_any_of; do not first fail an incomplete list and then try labels serially. All candidates require context. A unique candidate ID retains fresh competing-target checks when tapped. See [cached alternatives](references/visual-targets.md#compare-alternatives-on-the-first-returned-frame).
+
 Use the existing server. Do not bypass checks with direct ADB input, start competing controllers, delete another session's lock or kill its process. If the server is unavailable, inspect its configured startup when possible and report the actual issue. Finish by verifying the business result and disconnecting.
 
 ## Decide from the current result
