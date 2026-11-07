@@ -100,19 +100,44 @@ def scope(graph,index):
             return identity(p,container=True),evidence
     return None
 
-def descriptor(graph,index):
+def descriptor(graph,index,context_texts=None):
     n = graph.nodes[index]
     ancestry = tuple(identity(graph.nodes[i],container=True) for i in graph.ancestors(index)
                      if graph.nodes[i].attrs.get('resource-id'))
     content=tuple(sorted(set(s for i in graph.descendants(index) if graph.nodes[i].visible for s in labels(graph.nodes[i]))))
-    return identity(n),scope(graph,index),ancestry,identity(graph.nodes[graph.root(index)],container=True),content
+    context = scope(graph,index)
+    if context_texts is not None:
+        # Explicit projection of context, not automatic timer/number detection.
+        # Keep the target's own identity and container ancestry; require every
+        # declared fact in its card, descendants or aligned peers on each sample.
+        available = set(content) | set(context[1] if context else ()) | set(aligned_labels(graph,index))
+        if not set(context_texts) <= available:
+            return None
+        context = ('declared', context[0] if context else None, tuple(sorted(set(context_texts))))
+        # The target's own descendant content still belongs to its identity.
+        # Selecting a whole clickable card must not hide a changed action inside it.
+    return identity(n),context,ancestry,identity(graph.nodes[graph.root(index)],container=True),content
+
+def declared_context(selector):
+    if selector is None or selector.context_texts is None:
+        return None
+    return tuple(dict.fromkeys([*selector.context_texts, *([selector.within_text] if selector.within_text else [])]))
+
+def matches_context(graph,index,selector):
+    if selector.within_text is not None:
+        s=scope(graph,index)
+        if ((not s or selector.within_text not in s[1]) and
+                selector.within_text not in aligned_labels(graph,index)):
+            return False
+    texts = declared_context(selector)
+    return texts is None or descriptor(graph,index,texts) is not None
 
 def aligned_labels(graph,index):
     """Supplement flat layouts with exact, horizontally adjacent peer labels.
 
     No nearest-neighbour choice or pixel-position identity: require vertical
-    overlap of at least half the smaller height. Full structural scope remains
-    bound, so this evidence only distinguishes candidates, never weakens guards.
+    overlap of at least half the smaller height. Resolution keeps the selected
+    automatic or explicitly declared context binding alongside this evidence.
     """
     n=graph.nodes[index]
     if n.parent is None:
@@ -133,19 +158,24 @@ def aligned_labels(graph,index):
             evidence.update(labels(peer))
     return tuple(sorted(evidence))
 
-def resolve(old,current,index,allow_empty=False):
-    wanted = descriptor(old,index)
+def resolve(old,current,index,allow_empty=False,*,context_texts=None):
+    wanted = descriptor(old,index,context_texts)
+    if wanted is None:
+        raise TargetError('context_missing','Declared context is absent from the inspected target scope')
     if not any(wanted[0][2:5]) and not allow_empty:
         raise TargetError('visual_required','Target has no semantic identity; inspect its image and use visual coordinates')
     matches = [i for i,n in enumerate(current.nodes)
-               if n.visible and area(n.bounds) and identity(n)==wanted[0] and descriptor(current,i)==wanted]
+               if n.visible and area(n.bounds) and identity(n)==wanted[0] and descriptor(current,i,context_texts)==wanted]
     # Only require alignment when structural identity is ambiguous in either
     # snapshot. Unrelated peers must not add guards to already unique targets.
     previously_ambiguous = any(i!=index and n.visible and area(n.bounds) and identity(n)==wanted[0]
-                               and descriptor(old,i)==wanted for i,n in enumerate(old.nodes))
+                               and descriptor(old,i,context_texts)==wanted for i,n in enumerate(old.nodes))
     if matches and (len(matches)>1 or previously_ambiguous):
-        row=aligned_labels(old,index)
-        matches=[i for i in matches if aligned_labels(current,i)==row]
+        def alignment(graph,i):
+            row=aligned_labels(graph,i)
+            return row if context_texts is None else tuple(v for v in row if v in context_texts)
+        row=alignment(old,index)
+        matches=[i for i in matches if alignment(current,i)==row]
     if not matches:
         raise TargetError('target_changed','Target or its context changed or disappeared')
     if len(matches)!=1:
@@ -184,6 +214,7 @@ def covering(graph,index,region):
                    and intersects(n.bounds,region))
 
 def check_target(old,current,old_index,new_index):
+    check_modal_changes(old,current)
     def visible_bounds(graph,index):
         l,t,r,b=graph.nodes[index].bounds
         clipped=(max(0,l),max(0,t),min(graph.width,r),min(graph.height,b))
@@ -203,7 +234,7 @@ def check_target(old,current,old_index,new_index):
     def other_windows(graph,index,region):
         own=graph.root(index)
         return Counter((identity(n,container=True),n.bounds) for i,n in enumerate(graph.nodes)
-                       if i!=own and n.parent is None and n.visible and area(n.bounds) and intersects(n.bounds,region))
+                       if i!=own and n.parent is None and n.visible and area(n.bounds) and window_affects(graph,i,[region]))
     # The target's own window may resize during a launch animation. Its identity
     # is already bound by descriptor(); other windows retain geometric guards.
     if other_windows(current,new_index,hit_region(new_bounds))-other_windows(old,old_index,hit_region(old_bounds)):
@@ -217,16 +248,40 @@ def surfaces(graph):
     return Counter((identity(n,container=True),n.bounds) for i,n in enumerate(graph.nodes)
                    if n.visible and area(n.bounds)>=graph.width*graph.height*.2 and len(graph.ancestors(i))<=3)
 
+def is_modal(node):
+    return (any(kind in node.attrs.get('class','') for kind in ('Dialog','PopupWindow')) or
+            node.attrs.get('modal') == 'true')
+
+def check_modal_changes(old,current):
+    def layers(graph):
+        return Counter((identity(n),n.bounds) for n in graph.nodes if n.visible and is_modal(n))
+    if layers(current) - layers(old):
+        raise TargetError('window_changed','A modal layer appeared or changed')
+
+def window_affects(graph,index,regions):
+    """Spatial actions ignore disjoint windows, not exposed modal/focused ones."""
+    if not regions or any(intersects(graph.nodes[index].bounds,r) for r in regions):
+        return True
+    return any(graph.nodes[i].visible and (is_modal(graph.nodes[i]) or
+               graph.nodes[i].attrs.get('focused') == 'true' or
+               graph.nodes[i].attrs.get('window-focused') == 'true')
+               for i in [index,*graph.descendants(index)])
+
 def check_layout(old, current, previous_regions=None, current_regions=None):
     """Separate a window's identity/order from its own layout geometry.
 
-    Root layout animation is allowed for the same unambiguous largest window. Other
-    windows keep exact geometry. Inner containers still bind geometry unless
-    both samples contain the entire action evidence in the same passive container.
+    Filter topology against BOTH frames' action evidence so relocation cannot
+    make an unchanged container appear added/removed. Keys without an action
+    region retain whole-window validation. Modal/focused windows remain relevant.
+    The same largest root may resize; passive containers may reflow while still
+    containing their respective frame's evidence.
     """
-    def roots(graph):
-        return [n for n in graph.nodes if n.parent is None and n.visible and area(n.bounds)]
-    before, after = roots(old), roots(current)
+    check_modal_changes(old,current)
+    regions = ([*previous_regions,*current_regions] if previous_regions and current_regions else None)
+    def roots(graph,regions):
+        return [n for i,n in enumerate(graph.nodes) if n.parent is None and n.visible and area(n.bounds)
+                and window_affects(graph,i,regions)]
+    before, after = roots(old,regions), roots(current,regions)
     if [identity(n, container=True) for n in before] != [identity(n, container=True) for n in after]:
         raise TargetError('window_changed', 'Window identity or stacking order changed')
     def encloses(bounds, regions):
@@ -239,16 +294,18 @@ def check_layout(old, current, previous_regions=None, current_regions=None):
                 (previous_regions and not encloses(a.bounds, previous_regions)) or
                 (current_regions and not encloses(b.bounds, current_regions))):
             raise TargetError('window_changed', 'Window geometry no longer contains the action evidence')
-    def inner(graph):
+    def inner(graph,regions):
         result = {}
         for i, n in enumerate(graph.nodes):
             if n.parent is None or not n.visible or area(n.bounds) < graph.width*graph.height*.2 or len(graph.ancestors(i)) > 3:
+                continue
+            if regions and not any(intersects(n.bounds,r) for r in regions):
                 continue
             key = (identity(n, container=True), tuple(identity(graph.nodes[a], container=True) for a in graph.ancestors(i)),
                    n.attrs.get('clickable'), n.attrs.get('scrollable'))
             result.setdefault(key, []).append(n)
         return result
-    a, b = inner(old), inner(current)
+    a, b = inner(old,regions), inner(current,regions)
     if a.keys() != b.keys():
         raise TargetError('surface_changed', 'Main container identity changed')
     for key, nodes in a.items():
@@ -292,14 +349,8 @@ def select_observed(elements,graph,selector):
         if any(getattr(selector,k) is not None and getattr(e,k)!=getattr(selector,k)
                for k in ('text','description','resource_id')):
             continue
-        if selector.within_text is not None:
-            s=scope(graph,e.node_index)
-            # A flat screen may have no bounded semantic group at all. The
-            # same aligned-peer evidence advertised in observations must be
-            # usable for selection, not only after a structural scope match.
-            if ((not s or selector.within_text not in s[1]) and
-                    selector.within_text not in aligned_labels(graph,e.node_index)):
-                continue
+        if not matches_context(graph,e.node_index,selector):
+            continue
         found.append(e)
     if len(found)>1 and selector.within_text is not None:
         aligned=[e for e in found if selector.within_text in aligned_labels(graph,e.node_index)]

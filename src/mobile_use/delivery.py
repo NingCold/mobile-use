@@ -82,7 +82,7 @@ def brief_result(data):
         result.pop('observation_status', None)
         if result.get('validation'):
             result['validation'] = {k: v for k, v in result['validation'].items()
-                                    if k in ('kind', 'status', 'previous_bounds', 'resolved_bounds')}
+                                    if k in ('kind', 'status', 'previous_bounds', 'resolved_bounds', 'context_binding')}
         result.pop('settle', None)
     if 'continuation' in result:
         result['continuation'] = dict(result['continuation'])

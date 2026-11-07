@@ -12,6 +12,20 @@ To continue immediately after existing bounded returns, put a plan in back_seque
 
 Only one final observation is delivered, including on recoverable failures. Inspect navigation.status, steps, wait.status when supplied, and each input_status; for a return continuation these are under continuation.navigation. A step may be sent even if its expected transition failed. sent/unknown steps must never be replayed as a sequence. Resolve a partial result from its returned state before planning further work. Timeouts bound local polling, not an in-flight device RPC. Neither final observation nor completed navigation proves business completion. Without until, the last tap can still be loading; inspect its delivered result.
 
+## Stable context on changing cards
+
+When `get_status.capabilities.declared_target_context` is true, ordinary `tap.target` and navigation `step.target` accept `context_texts`. Use this when a stable button shares a card with a changing countdown or incidental status. Bind the observed item and all facts that determine whether the action is authorized, rather than requiring every surrounding label to stay unchanged:
+
+```json
+{"text":"Open","context_texts":["Item A","Price 10"]}
+```
+
+Each of the 1..8 strings is an exact accessible label, at most 500 characters, in the target's card, own descendants or aligned peers. All must remain present in that scope throughout relocation/readiness. `within_text`, when supplied, is also retained as a required fact even if not repeated in the list. No OCR, timer regex, brand lookup or extra observation is introduced. Missing facts, ambiguity, disabled targets, changed containers, modal layers and covering windows still stop input.
+
+This replaces automatic binding of **surrounding** labels. Unlisted sibling status may change; the target's own label, state and descendant content remain bound. Select the stable button rather than a whole changing card. Include price, recipient, item identity and completion state whenever they determine the decision—the server cannot infer that an omitted field is irrelevant. If the required facts are uncertain, keep the original binding and inspect the result. Do not add this option merely to bypass an unexplained rejection.
+
+Omitting `context_texts` preserves the original full-context behavior. `element_id` clicks and extra `context_element_ids` retain their existing checks; use a `target` selector to opt in. The same selector also works with declared busy controls. These are structured labels, not substrings or matches against a drawn page.
+
 ## Known visual actions and immediate follow-up
 
 A tap step accepts visual_target={text,context_text?,search_bounds?} instead of target, and requires when.text as a known accessible page condition. The exact action must be unique in the declared original-pixel search region. Local OCR resolves its coordinates, binds a current structural container after recognition, then confirms target pixels and current page/windows again. This avoids binding the first future-page reference to a pre-OCR transition tree. Once bound, container/window changes still stop. Missing labels and movement get bounded read-only recovery: at most four screenshots/eight seconds within the step/plan budget; no input replay. OCR/RPC in flight is not preempted.

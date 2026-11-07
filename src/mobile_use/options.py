@@ -7,15 +7,17 @@ import re
 MAX_VISUAL_ALTERNATIVES = 6
 MAX_CACHED_VISUAL_ALTERNATIVES = 12
 MAX_VISUAL_CONDITIONS = 8
+MAX_TARGET_CONTEXTS = 8
 
 
 @dataclass
 class TargetSelector:
-    """Exact fields from an inspected observation; within_text scopes a row/card."""
+    """Exact observed fields; context_texts opts into selected stable card facts."""
     text: str | None = None
     description: str | None = None
     resource_id: str | None = None
     within_text: str | None = None
+    context_texts: list[str] | None = None
     __pydantic_config__ = {'extra': 'forbid'}
 
 
@@ -168,8 +170,12 @@ def target_option(value):
     if not isinstance(value, TargetSelector) or not any((value.text, value.description, value.resource_id)):
         raise ValueError('target requires text, description or resource_id')
     if any(v is not None and (not isinstance(v, str) or not v.strip() or len(v) > 500)
-           for v in asdict(value).values()):
+           for v in (value.text, value.description, value.resource_id, value.within_text)):
         raise ValueError('Target fields must be nonblank strings of at most 500 characters')
+    if value.context_texts is not None and (
+            not isinstance(value.context_texts, list) or not 1 <= len(value.context_texts) <= MAX_TARGET_CONTEXTS or
+            any(not isinstance(v, str) or not v.strip() or len(v) > 500 for v in value.context_texts)):
+        raise ValueError(f'context_texts requires 1..{MAX_TARGET_CONTEXTS} exact nonblank labels of at most 500 characters')
     return value
 
 

@@ -31,7 +31,7 @@ class LocalNavigation:
             if len(candidates) != 1:
                 return False
             owner = candidates[0]
-        return not any(i != owner and n.parent is None and n.visible and targets.intersects(n.bounds, region)
+        return not any(i != owner and n.parent is None and n.visible and targets.window_affects(graph,i,[region])
                        for i,n in enumerate(graph.nodes))
 
     def _navigation_dimensions(self, plan, header):
@@ -188,7 +188,7 @@ class LocalNavigation:
                             g = frame.get('page_graph')
                             if (g is None or targets.windows(g) != targets.windows(current[1].graph)
                                     or not self._matches(step.when, header, current[1].elements)
-                                    or any(n.visible and 'Dialog' in n.attrs.get('class', '')
+                                    or any(n.visible and targets.is_modal(n)
                                            for n in current[1].graph.nodes)):
                                 sample = None  # Do not present the old screen as the new window.
                         recovery = self._remember_observation(self._capture_target(
@@ -257,6 +257,7 @@ class LocalNavigation:
                             sample=lambda: self._sequence_check(baseline, plan.allowed_packages, tree=True),
                             cancel=self.cancel, now=time.monotonic, deadline=step_deadline,
                             options=step.readiness or TapReadiness(),
+                            context_texts=targets.declared_context(step.target),
                             condition=(lambda h, t: self._matches(step.when, h, t.elements)) if step.when else None)
                         row['readiness'] = readiness
                         if readiness['layout_updates']:
@@ -279,15 +280,22 @@ class LocalNavigation:
                             current_header, current = self._sequence_check(baseline, plan.allowed_packages, tree=True)
                             if current_header != header:
                                 raise MobileError('Foreground changed after navigation condition')
-                            targets.check_layout(tree.graph, current.graph)
                             if step.target:
-                                resolved = targets.resolve(tree.graph, current.graph, element.node_index)
+                                resolved = targets.resolve(tree.graph, current.graph, element.node_index,
+                                                           context_texts=targets.declared_context(step.target))
                                 confirmed = next(e for e in current.elements if e.node_index == resolved)
+                                targets.check_layout(tree.graph,current.graph,[element.bounds],[confirmed.bounds])
                                 if confirmed.bounds != element.bounds:
                                     carried = (current_header, current)
                                     row['layout_updates'] = row.get('layout_updates', 0) + 1
                                     ready = False
                                 element = confirmed
+                            else:
+                                g = step.swipe
+                                # Navigation uses a steady (straight) gesture.
+                                regions = [(min(g.start_x,g.end_x),min(g.start_y,g.end_y),
+                                            max(g.start_x,g.end_x)+1,max(g.start_y,g.end_y)+1)]
+                                targets.check_layout(tree.graph,current.graph,regions,regions)
                             tree = current
                             if step.when and not self._matches(step.when, header, tree.elements):
                                 raise MobileError('Navigation condition changed before input')
@@ -298,7 +306,8 @@ class LocalNavigation:
                 if step.kind != 'launch' and not self._navigation_window(tree, step, element, visual_bounds):
                     raise MobileError('Another window covers navigation input; inspect first')
                 if element is not None:
-                    idx = targets.resolve(tree.graph, tree.graph, element.node_index)
+                    idx = targets.resolve(tree.graph, tree.graph, element.node_index,
+                                          context_texts=targets.declared_context(step.target))
                     bounds = targets.check_target(tree.graph, tree.graph, idx, idx)
                     gesture = tap_plan(bounds, self._seed(None), 'steady')
                     row['target'] = asdict(step.target)

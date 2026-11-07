@@ -311,6 +311,10 @@ def create_server(service: MobileService):
         Structured targets are re-resolved by identity/context and may move. context_element_ids
         binds additional observed facts (price/order/etc.). visual_bounds selects the inspected
         coordinate target's local validation rectangle; it cannot authorize an unseen target.
+        target.context_texts optionally binds 1..8 exact card/aligned labels instead of all
+        surrounding text. Include every decision-critical fact; within_text stays bound too.
+        The target's own label/content and all extra context_element_ids keep their guards.
+        Omit context_texts for the original automatic context binding.
         dry_run validates/previews without input. Coordinates retain strict pixel checks unless
         visual_target explicitly binds exact inspected text plus distinct nearby context_text.
         That opt-in uses local OCR, uniqueness, context and fresh pixel confirmation to relocate;

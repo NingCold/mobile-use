@@ -20,7 +20,7 @@ from .diagnostics import exception_summary
 from .gestures import check_point, swipe_plan, tap_plan
 from . import __version__
 from .options import MAX_VISUAL_ALTERNATIVES, MAX_CACHED_VISUAL_ALTERNATIVES, visual_choices_option, WaitCondition, condition, seconds, focus_option, target_option
-from .options import MAX_VISUAL_CONDITIONS, visual_batch_option
+from .options import MAX_VISUAL_CONDITIONS, MAX_TARGET_CONTEXTS, visual_batch_option
 from .delivery import element_page, brief_observation
 from . import targets
 from .validation import TargetValidation
@@ -235,6 +235,8 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                                  "visual_candidates": self.validation_mode == 'target',
                                  "cached_visual_alternatives": self.validation_mode == 'target',
                                  "same_frame_conditions": self.validation_mode == 'target',
+                                 "declared_target_context": self.validation_mode == 'target',
+                                 "action_region_windows": self.validation_mode == 'target',
                                  "shared_ocr_frames": True,
                                  "rejection_observation": True, "focus": True, "call_timings": True,
                                  "post_input_settle": True,
@@ -256,6 +258,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                            "visual_target_candidates": MAX_VISUAL_ALTERNATIVES if self.validation_mode == 'target' else 0,
                            "cached_visual_candidates": MAX_CACHED_VISUAL_ALTERNATIVES if self.validation_mode == 'target' else 0,
                            "visual_conditions": MAX_VISUAL_CONDITIONS if self.validation_mode == 'target' else 0,
+                           "target_context_texts": MAX_TARGET_CONTEXTS if self.validation_mode == 'target' else 0,
                            "compact_image_max_edge": 1280, "compact_label_characters": 256,
                            "cached_page_elements": 250},
                 "trace_dir": str(self.run_dir)}
@@ -630,11 +633,16 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
             if profile not in ("natural", "steady"):
                 raise MobileError("Unknown gesture profile")
             element = None
+            context_texts = None
             if target is not None:
                 if element_id is not None or x is not None or y is not None:
                     raise MobileError('Choose target OR element_id OR coordinates')
                 try:
-                    element = targets.select_observed(obs.elements, obs.tree.graph, target_option(target))
+                    target = target_option(target)
+                    context_texts = targets.declared_context(target)
+                    if context_texts is not None and self.validation_mode != 'target':
+                        raise ValueError('Declared target context requires target mode')
+                    element = targets.select_observed(obs.elements, obs.tree.graph, target)
                 except targets.TargetError as exc:
                     raise MobileError(str(exc), code=exc.code) from None
                 element_id = element.id
@@ -654,7 +662,7 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                 self._validate(observation_id, target_bounds=bounds)
             elif element is not None:
                 _, bounds = self._validate_target(observation_id, 'tap', element, context_ids=context_element_ids,
-                                                  readiness=readiness)
+                                                  readiness=readiness, context_texts=context_texts)
             else:
                 w, h = obs.header['width'], obs.header['height']
                 region = (max(0, px-48), max(0, py-48), min(w, px+49), min(h, py+49))
@@ -698,10 +706,12 @@ class MobileService(TargetValidation, LocalSequences, LocalNavigation):
                         raise ValueError('container_id must identify an observed scrollable element')
                 region=(min(p[0] for p in gesture.points),min(p[1] for p in gesture.points),
                         max(p[0] for p in gesture.points)+1,max(p[1] for p in gesture.points)+1)
+                path_region=region
                 if kind=='drag':
                     region=(max(0,start[0]-48),max(0,start[1]-48),min(width,start[0]+49),min(height,start[1]+49))
                 self._validate_target(observation_id, 'drag' if kind=='drag' else 'swipe', region=region,
-                                      container_index=container.node_index if container else None)
+                                      container_index=container.node_index if container else None,
+                                      action_region=path_region if kind=='drag' else None)
             action = gesture.as_dict()
             if dry_run:
                 return {"dry_run": True, "action": action}, obs

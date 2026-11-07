@@ -280,10 +280,6 @@ class TargetValidation:
                 targets.check_layout(previous, current,
                                      [*reference.regions, *(b for ref in guard_refs for b in ref.regions)],
                                      [target.bounds, *(c.bounds for c in contexts), *(g.bounds for g in guards)])
-                old_dialogs = {(targets.identity(n), n.bounds) for n in previous.nodes if 'Dialog' in n.attrs.get('class', '')}
-                if any('Dialog' in n.attrs.get('class', '') and (targets.identity(n), n.bounds) not in old_dialogs
-                       for n in current.nodes if n.visible):
-                    raise targets.TargetError('window_changed', 'A dialog appeared during local visual search')
                 for eid in context_ids or []:
                     element = targets.element_by_id(old.elements, eid)
                     targets.resolve(previous, current, element.node_index)
@@ -321,7 +317,8 @@ class TargetValidation:
             self._record_time('visual_local_ms', started)
 
     def _validate_target(self, observation_id, kind, element=None, region=None, context_ids=None, container_index=None,
-                         visual_target=None, readiness=None, visual_choices=None, visual_conditions=None):
+                         visual_target=None, readiness=None, visual_choices=None, visual_conditions=None, context_texts=None,
+                         action_region=None):
         from .service import MobileError
         started = time.monotonic()
         self._validation_result = None
@@ -344,13 +341,13 @@ class TargetValidation:
                     raise targets.TargetError('context_missing','Context ID is absent from the inspected observation')
                 targets.resolve(previous,current,e.node_index)
             if element is not None:
-                index = targets.resolve(previous,current,element.node_index,allow_empty=kind=='type')
+                index = targets.resolve(previous,current,element.node_index,allow_empty=kind=='type',context_texts=context_texts)
                 bounds = targets.check_target(previous,current,element.node_index,index)
                 if readiness is not None:
                     header, tree, index, bounds, ready_evidence = confirm_target(
                         header, tree, index, sample=lambda: self._sequence_check(header, [header['package']], tree=True),
                         cancel=self.cancel, now=time.monotonic,
-                        deadline=time.monotonic()+readiness.timeout_seconds, options=readiness)
+                        deadline=time.monotonic()+readiness.timeout_seconds, options=readiness,context_texts=context_texts)
                     current = tree.graph
                     # Additional facts remain bound through the readiness wait.
                     for eid in context_ids or []:
@@ -365,8 +362,12 @@ class TargetValidation:
                 evidence.update(scope='target_identity_context_visibility_windows',
                                 status='relocated' if bounds != element.bounds else 'ready',
                                 previous_bounds=list(element.bounds), resolved_bounds=list(bounds))
+                if context_texts is not None:
+                    evidence['context_binding'] = 'declared'
             else:
                 regions = [region] if region is not None else None
+                if action_region is not None:
+                    regions = [*regions,action_region]
                 if visual_target is not None:
                     bounds, visual = self._relocate_visual(old, header, region, visual_target, context_ids, tree,
                                                           visual_choices, visual_conditions)

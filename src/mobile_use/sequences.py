@@ -1,6 +1,7 @@
 """Bounded local continuations. Application policy is supplied by the caller."""
 from datetime import datetime, timezone
 import time
+from . import targets
 
 
 class LocalSequences:
@@ -35,7 +36,7 @@ class LocalSequences:
                     self._log('sequence_read_transition', attempt=attempt + 1)
                     self.cancel.wait(.1)
                     continue  # Discard the mixed sample; retry reads only, not input.
-            if state and state.graph and any(n.visible and 'Dialog' in n.attrs.get('class', '') for n in state.graph.nodes):
+            if state and state.graph and any(n.visible and targets.is_modal(n) for n in state.graph.nodes):
                 raise MobileError('Dialog detected; inspect before further navigation')
             return header, state
         raise MobileError('Foreground did not settle within three continuation samples')

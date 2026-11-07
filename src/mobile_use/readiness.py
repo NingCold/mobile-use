@@ -11,10 +11,8 @@ def busy_present(graph, selector):
         if any(getattr(selector, field) is not None and n.attrs.get(attr, '') != getattr(selector, field)
                for field, attr in [('text', 'text'), ('description', 'content-desc'), ('resource_id', 'resource-id')]):
             continue
-        if selector.within_text is not None:
-            scope = targets.scope(graph, i)
-            if (not scope or selector.within_text not in scope[1]) and selector.within_text not in targets.aligned_labels(graph, i):
-                continue
+        if not targets.matches_context(graph,i,selector):
+            continue
         return True
     return False
 
@@ -25,7 +23,7 @@ def geometry(graph, index, bounds):
     return bounds, tuple(graph.nodes[i].bounds for i in graph.ancestors(index))
 
 
-def confirm_target(header, tree, index, *, sample, cancel, now, deadline, options, condition=None):
+def confirm_target(header, tree, index, *, sample, cancel, now, deadline, options, condition=None, context_texts=None):
     """Return the last checked target, never send input or create an observation."""
     anchor, anchor_index = tree.graph, index
     started = now()
@@ -38,7 +36,7 @@ def confirm_target(header, tree, index, *, sample, cancel, now, deadline, option
         if now() >= deadline:
             raise targets.TargetError('target_not_ready', 'Target did not become ready within the click budget')
         try:
-            current = targets.resolve(anchor, tree.graph, anchor_index)
+            current = targets.resolve(anchor, tree.graph, anchor_index,context_texts=context_texts)
         except targets.TargetError as exc:
             # Missing is transient; a different identity/context or ambiguity is
             # not. Keep the original binding across every read-only attempt.
